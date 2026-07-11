@@ -1,0 +1,37 @@
+import type { ApiErrorCode } from "@iris/shared";
+import type { NextFunction, Request, Response } from "express";
+
+export class AppError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: ApiErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = "AppError";
+  }
+}
+
+export function toAppError(error: unknown): AppError {
+  if (error instanceof AppError) return error;
+  return new AppError(500, "internal_error", "An internal error occurred.");
+}
+
+export function sendError(res: Response, error: unknown): void {
+  const appError = toAppError(error);
+  res.status(appError.status).json({
+    ok: false,
+    error: {
+      code: appError.code,
+      message: appError.message
+    }
+  });
+}
+
+export function asyncRoute(
+  handler: (req: Request, res: Response, next: NextFunction) => Promise<void>
+) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    handler(req, res, next).catch(next);
+  };
+}

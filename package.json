@@ -1,0 +1,33 @@
+{
+  "name": "iris-casino-activity",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build --workspace @iris/shared && concurrently -n web,server -c magenta,cyan \"npm run dev:web\" \"npm run dev:server\"",
+    "dev:web": "npm run dev --workspace @iris/web",
+    "dev:server": "npm run dev --workspace @iris/server",
+    "build": "npm run build --workspace @iris/shared && npm run build --workspace @iris/server && npm run build --workspace @iris/web",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "test": "npm run build --workspace @iris/shared && npm run test --workspace @iris/shared && npm run test --workspace @iris/server && npm run test --workspace @iris/web",
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck --workspace @iris/shared && npm run typecheck --workspace @iris/server && npm run typecheck --workspace @iris/web"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "concurrently": "^9.1.0",
+    "eslint": "^9.17.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "eslint-plugin-react-refresh": "^0.4.16",
+    "globals": "^15.14.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.2"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

@@ -98,7 +98,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
 
-  app.use(helmet());
+  app.use(helmet(activityHelmetOptions(env)));
   if (options.webDistPath) {
     app.use(express.static(options.webDistPath, {
       setHeaders(res, path) {
@@ -576,4 +576,24 @@ function requestIp(req: Request): string {
 
 function requestPlayer(req: Request): string {
   return getSession(req).user?.id || requestIp(req);
+}
+
+function activityHelmetOptions(env: ServerEnv) {
+  if (!env.DISCORD_ACTIVITY_MODE) return undefined;
+
+  return {
+    xFrameOptions: false,
+    contentSecurityPolicy: {
+      directives: {
+        "frame-ancestors": [
+          "'self'",
+          "https://discord.com",
+          "https://*.discord.com",
+          "https://discordapp.com",
+          "https://*.discordapp.com",
+          "https://*.discordsays.com"
+        ]
+      }
+    }
+  };
 }

@@ -129,6 +129,28 @@ describe("server API", () => {
     expect(cookie).toContain("partitioned");
   });
 
+  it("permits the Discord Activity iframe only in Activity mode", async () => {
+    const app = createApp({
+      env: {
+        ...baseEnv,
+        DISCORD_ACTIVITY_MODE: "true",
+        DISCORD_CLIENT_ID: "1234567890"
+      },
+      logger: silentLogger
+    });
+
+    const res = await request(app).get("/api/health").expect(200);
+    const policy = String(res.headers["content-security-policy"] ?? "");
+
+    expect(res.headers["x-frame-options"]).toBeUndefined();
+    expect(policy).toContain("frame-ancestors 'self'");
+    expect(policy).toContain("https://discord.com");
+    expect(policy).toContain("https://*.discord.com");
+    expect(policy).toContain("https://discordapp.com");
+    expect(policy).toContain("https://*.discordapp.com");
+    expect(policy).toContain("https://*.discordsays.com");
+  });
+
   it("returns 401 for unauthenticated /api/wallet", async () => {
     const res = await request(appWith()).get("/api/wallet").expect(401);
 

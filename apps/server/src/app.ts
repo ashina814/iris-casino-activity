@@ -27,6 +27,7 @@ import { loadEnv, type ServerEnv } from "./env.js";
 import { AppError, asyncRoute, sendError } from "./errors.js";
 import { createRateLimit } from "./middleware/rate-limit.js";
 import { getWalletForDiscordUser } from "./services/wallet.js";
+import { ActivityEconomyService, FileActivityProgressStore } from "./services/activity-economy.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -72,6 +73,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const bingo = new BingoService({ env, fetch: fetchFn, store: new FileBingoStore(env.BINGO_STATE_PATH) });
   const scratch = new ScratchService({ env, fetch: fetchFn, store: new FileScratchStore(env.SCRATCH_STATE_PATH) });
   const legacyGames = new LegacyGamesService({ env, fetch: fetchFn, store: new FileLegacyGameStore(env.LEGACY_GAMES_STATE_PATH) });
+  const activityEconomy = new ActivityEconomyService({ env, fetch: fetchFn, store: new FileActivityProgressStore(env.ACTIVITY_PROGRESS_STATE_PATH) });
   const reconciliation = Promise.all([
     roulette.reconcileAll(),
     slots.reconcileAll(),
@@ -194,6 +196,24 @@ export function createApp(options: CreateAppOptions = {}) {
 
       const wallet = await getWalletForDiscordUser(user.id, env, fetchFn);
       res.json({ ok: true, wallet: wallet.wallet, currency: wallet.currency });
+    })
+  );
+
+  app.get(
+    "/api/economy/daily",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      res.json({ ok: true, daily: await activityEconomy.dailyStatus(user) });
+    })
+  );
+
+  app.post(
+    "/api/economy/daily/claim",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      res.json({ ok: true, daily: await activityEconomy.claimDaily(user) });
     })
   );
 

@@ -27,7 +27,8 @@ const baseEnv = {
   WAR_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-war.json",
   BINGO_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-bingo.json",
   SCRATCH_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-scratch.json",
-  LEGACY_GAMES_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-legacy.json"
+  LEGACY_GAMES_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-legacy.json",
+  ACTIVITY_PROGRESS_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-progress.json"
 };
 
 const silentLogger = {
@@ -209,6 +210,48 @@ describe("server API", () => {
     const res = await agent.get("/api/wallet").expect(502);
 
     expect(res.body.error.code).toBe("invalid_economy_response");
+  });
+
+  it("moves the daily gift and its reward reserve to the server-side RIS ledger", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ wallet: 25000, currency: "Ris" }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, wallet: 26150, currency: "Ris" }))
+      .mockResolvedValueOnce(jsonResponse({ wallet: 26150, currency: "Ris" }));
+    const app = createApp({
+      env: {
+        ...baseEnv,
+        ACTIVITY_PROGRESS_STATE_PATH: `C:\\tmp\\iris-casino-activity-test-progress-${Date.now()}.json`
+      },
+      fetch: fetchMock,
+      logger: console
+    });
+    const agent = request.agent(app);
+    await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+
+    const claim = await agent.post("/api/economy/daily/claim").expect(200);
+
+    expect(claim.body.daily).toMatchObject({
+      claimed: true,
+      amount: 1150,
+      requested: 1150,
+      notesAwarded: 0,
+      reserve: 1850,
+      notes: 0,
+      wallet: 26150,
+      currency: "Ris"
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://economy.local/internal/v1/activity/adjustments",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"reason":"daily"'),
+        headers: expect.objectContaining({ authorization: "Bearer super-secret-economy-key" })
+      })
+    );
+
+    const status = await agent.get("/api/economy/daily").expect(200);
+    expect(status.body.daily).toMatchObject({ claimed: true, reserve: 1850, wallet: 26150 });
   });
 
   it("does not expose secrets in error responses", async () => {

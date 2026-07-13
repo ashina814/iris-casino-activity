@@ -3,12 +3,7 @@
   if (!core || !core.PokerGame) return;
 
   function setWallet(wallet) {
-    if (!Number.isInteger(wallet)) return;
-    const value = `${new Intl.NumberFormat("ja-JP").format(wallet)} Ris`;
-    const gameWallet = document.querySelector("#balanceGame");
-    if (gameWallet) { gameWallet.textContent = value; gameWallet.previousElementSibling.textContent = "IRIS WALLET"; }
-    const irisWallet = document.querySelector(".iris-wallet strong");
-    if (irisWallet) irisWallet.textContent = value;
+    window.__IRIS_SET_WALLET?.(wallet);
   }
 
   async function request(path, body) {

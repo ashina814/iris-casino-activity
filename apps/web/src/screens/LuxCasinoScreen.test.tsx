@@ -17,7 +17,13 @@ describe("LuxCasinoScreen", () => {
 
     expect(screen.getByTitle("LUX NOCTIS Treasury Reform")).toHaveAttribute(
       "src",
-      "/lux-noctis/index.html?discord_id=234567890123456789&name=Yuki"
+      "/lux-noctis/index.html?discord_id=234567890123456789&name=Yuki&autostart=1"
     );
+  });
+
+  it("shows the original Lux entrance before Discord authentication", () => {
+    render(<LuxCasinoScreen user={null} />);
+
+    expect(screen.getByTitle("LUX NOCTIS Treasury Reform")).toHaveAttribute("src", "/lux-noctis/index.html");
   });
 });

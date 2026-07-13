@@ -10,7 +10,8 @@ export default tseslint.config(
       "**/dist/**",
       "**/coverage/**",
       "**/node_modules/**",
-      "design-reference/**"
+      "design-reference/**",
+      "apps/web/public/lux-noctis/**"
     ]
   },
   js.configs.recommended,

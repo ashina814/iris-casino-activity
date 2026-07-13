@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675">
+ <defs>
+  <radialGradient id="bg"><stop stop-color="#361a4a"/><stop offset=".5" stop-color="#100919"/><stop offset="1" stop-color="#050308"/></radialGradient>
+  <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff4b4"/><stop offset=".5" stop-color="#d8a548"/><stop offset="1" stop-color="#784315"/></linearGradient>
+  <filter id="glow"><feGaussianBlur stdDeviation="9" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+ </defs>
+ <rect width="1200" height="675" fill="url(#bg)"/>
+ <g opacity=".18" stroke="#d8ad58"><circle cx="865" cy="330" r="245" fill="none"/><circle cx="865" cy="330" r="185" fill="none" stroke-dasharray="5 13"/><path d="M865 85V575M620 330H1110M692 157 1038 503M1038 157 692 503"/></g>
+ <g transform="translate(770 170) rotate(-12)"><rect width="145" height="205" rx="12" fill="#f3ead8" stroke="#d6b064" stroke-width="6"/><text x="18" y="42" font-family="Georgia" font-size="32" fill="#211525">A</text><text x="72" y="125" text-anchor="middle" font-size="58" fill="#211525">♠</text></g>
+ <g transform="translate(930 150) rotate(12)"><rect width="145" height="205" rx="12" fill="#f3ead8" stroke="#d6b064" stroke-width="6"/><text x="18" y="42" font-family="Georgia" font-size="32" fill="#a52240">K</text><text x="72" y="125" text-anchor="middle" font-size="58" fill="#a52240">♥</text></g>
+ <g transform="translate(950 430) rotate(-8)"><circle r="125" fill="#2c122f" stroke="#d39a38" stroke-width="22"/><circle r="96" fill="none" stroke="#efca72" stroke-width="5"/><circle r="72" fill="none" stroke="#a72e48" stroke-width="24" stroke-dasharray="6 6"/><circle r="42" fill="url(#gold)"/><text text-anchor="middle" y="10" font-size="36" fill="#2a150b">✦</text></g>
+ <text x="80" y="190" fill="#d8ad58" font-family="Arial" font-size="15" font-weight="700" letter-spacing="8">MIDNIGHT SOCIAL CASINO</text>
+ <text x="72" y="315" fill="url(#gold)" font-family="Georgia" font-size="105" letter-spacing="8" filter="url(#glow)">LUX</text>
+ <text x="72" y="410" fill="#f1e8da" font-family="Georgia" font-size="105" letter-spacing="5">NOCTIS</text>
+ <text x="80" y="475" fill="#b8aabc" font-family="sans-serif" font-size="23">深夜にだけ開く、完全プレイマネー制の夜宮殿。</text>
+ <rect x="80" y="520" width="360" height="56" rx="5" fill="url(#gold)"/><text x="260" y="556" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="700" fill="#211409" letter-spacing="4">ENTER THE PALACE</text>
+ <text x="80" y="625" fill="#776b7c" font-family="sans-serif" font-size="12" letter-spacing="3">NO PURCHASE · NO CASH VALUE · PLAY MONEY ONLY</text>
+</svg>

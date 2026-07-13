@@ -1,0 +1,15 @@
+services:
+  iris-casino-activity:
+    build: .
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - iris-casino-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  iris-casino-data:

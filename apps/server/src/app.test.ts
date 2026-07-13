@@ -10,7 +10,24 @@ const baseEnv = {
   IRIS_MOCK_WALLET: "false",
   IRIS_ECONOMY_API_BASE_URL: "http://economy.local",
   IRIS_ECONOMY_API_KEY: "super-secret-economy-key",
-  ECONOMY_API_TIMEOUT_MS: "20"
+  ECONOMY_API_TIMEOUT_MS: "20",
+  CASINO_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-blackjack.json",
+  ROULETTE_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-roulette.json",
+  SLOTS_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-slots.json",
+  BACCARAT_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-baccarat.json",
+  POKER_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-poker.json",
+  SICBO_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-sicbo.json",
+  KENO_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-keno.json",
+  DRAGON_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-dragon.json",
+  WHEEL_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-wheel.json",
+  CRAPS_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-craps.json",
+  PLINKO_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-plinko.json",
+  HILO_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-hilo.json",
+  MINES_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-mines.json",
+  WAR_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-war.json",
+  BINGO_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-bingo.json",
+  SCRATCH_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-scratch.json",
+  LEGACY_GAMES_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-legacy.json"
 };
 
 const silentLogger = {
@@ -40,13 +57,22 @@ async function authenticatedAgent(fetch = vi.fn()) {
 
 describe("server API", () => {
   it("returns health without secrets", async () => {
-    const res = await request(appWith()).get("/api/health").expect(200);
+    const app = appWith();
+    await app.locals.reconciliation;
+    const res = await request(app).get("/api/health").expect(200);
 
     expect(res.body).toEqual({
       ok: true,
       service: "iris-casino-activity",
       version: "0.1.0"
     });
+    expect(JSON.stringify(res.body)).not.toContain("super-secret");
+  });
+
+  it("exposes only the public Activity runtime configuration", async () => {
+    const res = await request(appWith()).get("/api/config").expect(200);
+
+    expect(res.body).toEqual({ ok: true, discordClientId: "", mockAuth: true });
     expect(JSON.stringify(res.body)).not.toContain("super-secret");
   });
 
@@ -66,6 +92,41 @@ describe("server API", () => {
       displayName: "Yuki",
       avatarUrl: null
     });
+  });
+
+  it("sets a partitioned secure session cookie for the Discord Activity proxy", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ access_token: "discord-token", token_type: "Bearer" }))
+      .mockResolvedValueOnce(jsonResponse({ id: "234567890123456789", username: "Yuki", global_name: "Yuki", avatar: null }));
+    const app = createApp({
+      env: {
+        ...baseEnv,
+        NODE_ENV: "production",
+        WEB_ORIGIN: "https://casino.iris.example",
+        DISCORD_ACTIVITY_MODE: "true",
+        ACTIVITY_COOKIE_DOMAIN: "1234567890.discordsays.com",
+        DISCORD_CLIENT_ID: "1234567890",
+        DISCORD_CLIENT_SECRET: "discord-client-secret",
+        DISCORD_REDIRECT_URI: "https://127.0.0.1",
+        IRIS_MOCK_AUTH: "false",
+        IRIS_MOCK_WALLET: "false"
+      },
+      fetch: fetchMock,
+      logger: silentLogger
+    });
+
+    const res = await request(app)
+      .post("/api/auth/exchange")
+      .set("Origin", "https://1234567890.discordsays.com")
+      .set("X-Forwarded-Proto", "https")
+      .send({ code: "discord-authorization-code" })
+      .expect(200);
+
+    const cookie = String(res.headers["set-cookie"] ?? "").toLowerCase();
+    expect(cookie).toContain("domain=1234567890.discordsays.com");
+    expect(cookie).toContain("samesite=none");
+    expect(cookie).toContain("secure");
+    expect(cookie).toContain("partitioned");
   });
 
   it("returns 401 for unauthenticated /api/wallet", async () => {

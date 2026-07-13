@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no" />
+  <meta name="theme-color" content="#090611" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="LUX NOCTIS TREASURY REFORM — 23ゲーム、安定通貨システム、成長・収集・ライブPvPを備えた完全プレイマネー制ソーシャルカジノ" />
+  <title>LUX NOCTIS TREASURY REFORM — Stable Economy & Live PvP</title>
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="expansion.css" />
+  <link rel="stylesheet" href="eternal.css" />
+  <link id="sovereignStyles" rel="stylesheet" href="sovereign.css" />
+  <link rel="stylesheet" href="economy.css" />
+  <link rel="stylesheet" href="activity-bridge.css" />
+</head>
+<body>
+  <canvas id="ambientCanvas" aria-hidden="true"></canvas>
+  <canvas id="celebrationCanvas" aria-hidden="true"></canvas>
+  <div id="grain" aria-hidden="true"></div>
+
+  <div id="app" data-theme="nocturne">
+    <header id="topbar">
+      <button id="brandButton" class="brand-lockup" type="button" aria-label="ロビーへ戻る">
+        <span class="brand-sigil">✦</span>
+        <span class="brand-text"><b>LUX NOCTIS</b><small>TREASURY REFORM · SOCIAL CASINO</small></span>
+      </button>
+
+      <div class="profile-chip" id="profileButton" role="button" tabindex="0" aria-label="プロフィールを開く">
+        <div class="avatar-orbit"><span id="avatarGlyph">♛</span></div>
+        <div class="profile-copy"><strong id="playerNameTop">Guest</strong><small><span id="levelTop">Lv.1</span> · <span id="rankTop">SILVER</span></small></div>
+        <div class="xp-mini"><i id="xpMiniFill"></i></div>
+      </div>
+
+      <div class="wallet-cluster">
+        <div class="wallet" title="ゲーム内プレイコイン。購入・換金・譲渡はできません。">
+          <span class="coin-mark">L</span>
+          <div><small>LUX PLAY COINS</small><strong id="balanceTop">50,000</strong></div>
+        </div>
+        <button id="jackpotButton" class="jackpot-chip" type="button" title="エクリプス金庫を開く">
+          <span class="jackpot-star">✦</span><span><small>ECLIPSE VAULT</small><strong id="jackpotPotTop">5,000 L</strong><i><b id="jackpotChargeTop"></b></i></span>
+        </button>
+        <div id="streakChip" class="streak-chip" hidden><small>WIN STREAK</small><strong id="streakTop">×0</strong></div>
+        <button id="dailyButton" class="icon-button reward-pulse" type="button" title="ミッドナイトギフト">🎁<span id="dailyDot"></span></button>
+        <button id="partyButton" class="icon-button" type="button" title="パーティー">♟<span id="partyCount">1</span></button>
+        <button id="settingsButton" class="icon-button" type="button" title="設定">⚙</button>
+      </div>
+    </header>
+
+    <main id="viewport">
+      <section id="introScreen" class="screen active" aria-label="イントロ">
+        <div class="intro-vault" aria-hidden="true">
+          <div class="vault-ring ring-a"></div><div class="vault-ring ring-b"></div><div class="vault-ring ring-c"></div>
+          <div class="vault-star">✦</div>
+        </div>
+        <div class="intro-copy">
+          <p class="eyebrow">TREASURY REFORM 6.0 · 23 TABLES · 5 LIVE PVP MODES</p>
+          <h1><span>LUX</span> NOCTIS</h1>
+          <p class="intro-lead">23のゲーム、120の蒐集品、115 TABLE STARS、36メダル、日替わりCROWN CIRCUIT。<br />配当監査・準備金・通貨交換所を備えた、長く遊べる深夜のソーシャル宮殿。</p>
+          <div class="name-entry">
+            <label for="playerNameInput">今夜の名前</label>
+            <input id="playerNameInput" maxlength="18" autocomplete="nickname" />
+          </div>
+          <button id="enterButton" class="primary-cta" type="button"><span>宮殿の扉を開く</span><i>ENTER THE PALACE</i></button>
+          <p class="playmoney-note">現金・暗号資産・換金可能な景品は使用しません。購入、換金、譲渡不可のプレイコイン専用ゲームです。</p>
+        </div>
+        <div class="intro-corner left">EST. 00:00</div><div class="intro-corner right">THE HOUSE OF STARS</div>
+      </section>
+
+      <section id="lobbyScreen" class="screen" aria-label="カジノロビー">
+        <div class="lobby-hero">
+          <div class="chandelier" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="hero-copy">
+            <p class="eyebrow" id="lobbyGreeting">WELCOME TO THE PALACE</p>
+            <h2>運命のテーブルを<br /><em>選んでください。</em></h2>
+            <p>勝敗はすべてプレイコインだけ。財務局が報酬発行量を管理し、遊び続けても通貨が無限増殖しない宮殿へ。</p>
+            <div class="hero-actions">
+              <button id="continueButton" class="gold-button" type="button">おすすめで遊ぶ</button>
+              <button id="inviteButton" class="glass-button" type="button">友達を招待</button>
+            </div>
+          </div>
+          <div class="palace-display" aria-hidden="true">
+            <div class="display-halo"></div>
+            <div class="display-card card-one"><span>♠</span><b>A</b></div>
+            <div class="display-card card-two"><span>♥</span><b>K</b></div>
+            <div class="display-chip"><i>L</i></div>
+            <div class="display-wheel"><i></i><b>✦</b></div>
+            <div class="display-reflection"></div>
+          </div>
+        </div>
+
+        <div class="ticker-wrap"><div class="ticker-label">PALACE LIVE</div><div id="liveTicker" class="ticker-track"></div></div>
+        <button id="nightEventBar" class="night-event-bar" type="button">
+          <span id="nightEventIcon">✦</span><div><small id="nightEventEyebrow">PALACE PHENOMENON</small><strong id="nightEventName">次の現象まで 6 ROUND</strong><p id="nightEventDesc">遊ぶほど、宮殿に特別な夜が訪れます。</p></div><b id="nightEventRounds">6</b>
+        </button>
+
+        <div class="lobby-layout">
+          <section class="games-section">
+            <div class="section-heading"><div><p class="eyebrow">THE GRAND FLOOR</p><h3>ゲームテーブル</h3></div><span>23 GAMES · CROWN CIRCUIT · 5 LIVE PVP MODES</span></div>
+            <div id="gameGrid" class="game-grid">
+              <button class="game-card blackjack-card" data-game="blackjack" type="button">
+                <div class="game-art blackjack-art"><div class="mini-card mc-a">A<span>♠</span></div><div class="mini-card mc-k">K<span>♥</span></div><div class="felt-orbit"></div><div class="chip-stack"></div></div>
+                <div class="game-copy"><span class="game-tag">CLASSIC TABLE</span><h4>NOCTURNE<br />BLACKJACK</h4><p>ダブル、スプリット対応。静寂の中で21を狙え。</p><div><b>入場 100 L〜</b><i>PLAY →</i></div></div>
+              </button>
+              <button class="game-card roulette-card featured" data-game="roulette" type="button">
+                <span class="featured-ribbon">FEATURED</span>
+                <div class="game-art roulette-art"><div class="mini-wheel"><i></i><b>✦</b></div><div class="roulette-ball"></div></div>
+                <div class="game-copy"><span class="game-tag">EUROPEAN WHEEL</span><h4>STELLAR<br />ROULETTE</h4><p>0〜36の欧州式。黄金の球が選ぶ、ただ一つの星。</p><div><b>入場 100 L〜</b><i>PLAY →</i></div></div>
+              </button>
+              <button class="game-card slots-card" data-game="slots" type="button">
+                <div class="game-art slots-art"><div class="mini-reel"><span>☾</span><span>♛</span><span>✦</span></div><div class="mini-reel delay"><span>♦</span><span>W</span><span>☾</span></div><div class="mini-reel delay2"><span>♛</span><span>✦</span><span>♦</span></div></div>
+                <div class="game-copy"><span class="game-tag">10 PAYLINES</span><h4>CELESTIAL<br />VAULT</h4><p>ワイルド、スキャッター、フリースピン搭載の星界金庫。</p><div><b>1回 100 L〜</b><i>PLAY →</i></div></div>
+              </button>
+              <button class="game-card baccarat-card" data-game="baccarat" type="button">
+                <div class="game-art baccarat-art"><div class="shoe-glow"></div><div class="mini-card b-one">8<span>♦</span></div><div class="mini-card b-two">9<span>♣</span></div><div class="baccarat-plaque">P · B</div></div>
+                <div class="game-copy"><span class="game-tag">GRAND SALON</span><h4>VELVET<br />BACCARAT</h4><p>PLAYERかBANKERか。絹の間で見届ける一瞬の決着。</p><div><b>入場 100 L〜</b><i>PLAY →</i></div></div>
+              </button>
+              <button class="game-card poker-card" data-game="poker" type="button">
+                <div class="game-art poker-art"><div class="poker-neon">ROYAL</div><div class="fan-card f1">10♠</div><div class="fan-card f2">J♠</div><div class="fan-card f3">Q♠</div><div class="fan-card f4">K♠</div><div class="fan-card f5">A♠</div></div>
+                <div class="game-copy"><span class="game-tag">JACKS OR BETTER</span><h4>ROYAL<br />DRAW</h4><p>カードを残して引き直す。ロイヤルフラッシュを完成させろ。</p><div><b>1回 100 L〜</b><i>PLAY →</i></div></div>
+              </button>
+              <button class="game-card sicbo-card" data-game="sicbo" type="button">
+                <div class="game-art sicbo-art"><div class="mini-die d1"><i></i><i></i><i></i><i></i><i></i></div><div class="mini-die d2"><i></i><i></i><i></i></div><div class="mini-die d3"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="dice-aura"></div></div>
+                <div class="game-copy"><span class="game-tag">THREE DICE SALON</span><h4>OBSIDIAN<br />SIC BO</h4><p>大小、合計、ゾロ目、数字。黒曜石の骰子が運命を刻む。</p><div><b>入場 100 L〜</b><i>PLAY →</i></div></div>
+              </button>
+              <button class="game-card keno-card" data-game="keno" type="button">
+                <div class="game-art keno-art"><div class="keno-orbit"><span>7</span><span>13</span><span>24</span><span>38</span></div><div class="keno-core">✦</div></div>
+                <div class="game-copy"><span class="game-tag">PICK 5–10 NUMBERS</span><h4>ORACLE<br />KENO</h4><p>40の星から数字を選び、10個の予言球との一致を狙え。</p><div><b>1回 100 L〜</b><i>PLAY →</i></div></div>
+              </button>
+            </div>
+          </section>
+
+          <aside class="lobby-sidebar">
+            <section class="glass-panel mission-panel">
+              <div class="panel-title"><div><p class="eyebrow">MIDNIGHT ORDERS</p><h3>今夜の依頼</h3></div><button id="missionsInfo" class="tiny-button" type="button">?</button></div>
+              <div id="missionList" class="mission-list"></div>
+            </section>
+
+            <section class="glass-panel party-panel">
+              <div class="panel-title"><div><p class="eyebrow">YOUR PARTY</p><h3>同じ夜の客人</h3></div><span id="roomCodeLabel">OFFLINE</span></div>
+              <div id="partyPlayers" class="party-players"></div>
+              <div class="party-meter"><div><span>PARTY CROWN</span><b id="partyMeterText">0 / 100</b></div><div class="meter-track"><i id="partyMeterFill"></i></div><small>仲間の大勝利で満ちると、全員に祝祭ボーナス。</small></div>
+              <div class="reaction-row"><button data-reaction="👏" type="button">👏</button><button data-reaction="🔥" type="button">🔥</button><button data-reaction="🍀" type="button">🍀</button><button data-reaction="🌙" type="button">🌙</button></div>
+            </section>
+
+            <section class="glass-panel rank-panel">
+              <div class="rank-medallion"><span id="rankMedal">I</span></div>
+              <div><p class="eyebrow">PALACE PRESTIGE</p><h3 id="rankNameSide">SILVER I</h3><p id="rankProgressText">次の称号まで 1,000 XP</p><div class="meter-track rank-track"><i id="rankProgressFill"></i></div></div>
+            </section>
+          </aside>
+        </div>
+        <footer class="palace-footer"><span>© LUX NOCTIS · ORIGINAL SOCIAL CASINO EXPERIENCE</span><b>PLAY MONEY · NO PURCHASE · NO CASH VALUE</b><span id="sessionTime">SESSION 00:00</span></footer>
+      </section>
+
+      <section id="gameScreen" class="screen" aria-label="ゲームテーブル">
+        <div class="game-shell-header">
+          <button id="backLobbyButton" class="back-button" type="button">← <span>ロビー</span></button>
+          <div><p class="eyebrow" id="gameEyebrow">TABLE</p><h2 id="gameTitle">GAME</h2></div>
+          <div id="gameEventBadge" class="game-event-badge" hidden><span>✦</span><div><small>PALACE EVENT</small><strong id="gameEventName">STARDUST</strong></div></div>
+          <div class="table-wallet"><small>LUX PLAY COINS</small><strong id="balanceGame">50,000 L</strong></div>
+          <button id="gameHelpButton" class="icon-button" type="button">?</button>
+        </div>
+        <div id="gameMount"></div>
+      </section>
+    </main>
+
+    <nav id="mobileNav" aria-label="モバイルナビゲーション">
+      <button data-nav="lobby" class="active" type="button"><span>♜</span><small>ロビー</small></button>
+      <button data-nav="missions" type="button"><span>✦</span><small>依頼</small></button>
+      <button data-nav="daily" type="button"><span>🎁</span><small>ギフト</small></button>
+      <button data-nav="party" type="button"><span>♟</span><small>パーティー</small></button>
+      <button data-nav="profile" type="button"><span>♛</span><small>自分</small></button>
+    </nav>
+
+    <div id="modalBackdrop" class="modal-backdrop" hidden></div>
+    <section id="profileModal" class="modal palace-modal" hidden aria-modal="true" role="dialog">
+      <button class="modal-close" data-close-modal type="button">×</button>
+      <div class="modal-crest">♛</div><p class="eyebrow">PALACE PASSPORT</p><h2>プレイヤープロフィール</h2>
+      <div class="profile-overview"><div class="big-avatar"><span id="profileAvatar">♛</span><i></i></div><div><h3 id="profileName">Guest</h3><p id="profileRank">SILVER I · Lv.1</p><div class="profile-balance"><span class="coin-mark">L</span><b id="profileBalance">50,000</b></div></div></div>
+      <div class="modal-tabs"><button class="active" data-profile-tab="stats" type="button">記録</button><button data-profile-tab="achievements" type="button">称号</button><button data-profile-tab="relics" type="button">秘宝</button><button data-profile-tab="themes" type="button">宮殿テーマ</button></div>
+      <div id="profileTabContent"></div>
+    </section>
+
+    <section id="dailyModal" class="modal daily-modal" hidden aria-modal="true" role="dialog">
+      <button class="modal-close" data-close-modal type="button">×</button>
+      <div class="daily-rays" aria-hidden="true"></div><div class="gift-box" aria-hidden="true"><i></i><b>✦</b></div>
+      <p class="eyebrow">MIDNIGHT GIFT</p><h2>宮殿からの贈り物</h2><p id="dailyDescription">今夜のプレイコインを受け取れます。</p>
+      <div class="daily-amount"><span class="coin-mark">L</span><strong id="dailyAmount">1,000</strong></div>
+      <button id="claimDailyButton" class="primary-cta" type="button"><span>受け取る</span><i>CLAIM GIFT</i></button>
+      <small>購入・換金できないゲーム内プレイコインです。</small>
+    </section>
+
+    <section id="partyModal" class="modal palace-modal" hidden aria-modal="true" role="dialog">
+      <button class="modal-close" data-close-modal type="button">×</button><p class="eyebrow">SOCIAL SALON</p><h2>パーティーラウンジ</h2>
+      <div class="room-card"><span>ROOM</span><strong id="roomCodeModal">OFFLINE</strong><button id="copyRoomButton" type="button">招待リンクをコピー</button></div>
+      <div id="partyModalPlayers" class="party-modal-players"></div>
+      <div class="party-feed-wrap"><h3>LIVE FEED</h3><div id="partyFeed" class="party-feed"></div></div>
+    </section>
+
+    <section id="settingsModal" class="modal palace-modal" hidden aria-modal="true" role="dialog">
+      <button class="modal-close" data-close-modal type="button">×</button><p class="eyebrow">PREFERENCES</p><h2>宮殿の設定</h2>
+      <div class="setting-list">
+        <label><span><b>サウンド</b><small>カード、チップ、勝利演出の効果音</small></span><input id="soundToggle" type="checkbox" checked /><i></i></label>
+        <label><span><b>低モーション</b><small>大きな回転や点滅を抑えます</small></span><input id="motionToggle" type="checkbox" /><i></i></label>
+        <label><span><b>省電力描画</b><small>スマホの発熱と電池消費を抑えます</small></span><input id="qualityToggle" type="checkbox" /><i></i></label>
+        <label><span><b>休憩リマインダー</b><small>30分ごとに休憩を案内します</small></span><input id="breakToggle" type="checkbox" checked /><i></i></label>
+      </div>
+      <div class="danger-zone"><div><b>プレイヤーデータをリセット</b><small>コイン、レベル、記録、実績を最初の状態に戻します。</small></div><button id="resetProfileButton" type="button">リセット</button></div>
+    </section>
+
+
+    <section id="jackpotModal" class="modal palace-modal jackpot-modal" hidden aria-modal="true" role="dialog">
+      <button class="modal-close" data-close-modal type="button">×</button>
+      <div class="vault-constellation" aria-hidden="true"><i></i><i></i><i></i><b>✦</b></div>
+      <p class="eyebrow">ECLIPSE VAULT · PERSONAL PROGRESSIVE</p><h2>星蝕の金庫</h2>
+      <p class="jackpot-lead">改革後に発生したプレイヤー側の累積純損失から最大10%を既存Lとして再循環し、金庫へ積み立てます。CHARGEが100になると、積立済みの星光から3つの星箱の1つを開けられます。</p>
+      <div class="jackpot-pot"><small>CURRENT PLAY-MONEY POT</small><strong id="jackpotPotModal">5,000 L</strong></div>
+      <div class="jackpot-charge"><div><span>VAULT CHARGE</span><b id="jackpotChargeText">0 / 100</b></div><div class="meter-track"><i id="jackpotChargeFill"></i></div></div>
+      <div id="jackpotLocked" class="jackpot-locked"><span>◇</span><b>まだ封印されています</b><small id="jackpotHint">あと100 CHARGE</small></div>
+      <div id="jackpotChests" class="jackpot-chests" hidden>
+        <button data-jackpot-chest="0" type="button"><span>Ⅰ</span><b>STAR CHEST</b><i>✦</i></button>
+        <button data-jackpot-chest="1" type="button"><span>Ⅱ</span><b>MOON CHEST</b><i>☾</i></button>
+        <button data-jackpot-chest="2" type="button"><span>Ⅲ</span><b>CROWN CHEST</b><i>♛</i></button>
+      </div>
+      <div id="jackpotReveal" class="jackpot-reveal" hidden><small>THE VAULT AWARDS</small><strong id="jackpotRevealAmount">0 L</strong><p id="jackpotRevealText"></p></div>
+      <small class="playmoney-inline">購入・換金・譲渡できないプレイコイン専用です。</small>
+    </section>
+
+    <section id="helpModal" class="modal palace-modal wide-modal" hidden aria-modal="true" role="dialog">
+      <button class="modal-close" data-close-modal type="button">×</button><p class="eyebrow">TABLE GUIDE</p><h2 id="helpTitle">遊び方</h2><div id="helpContent" class="help-content"></div>
+    </section>
+
+    <section id="confirmModal" class="modal confirm-modal" hidden aria-modal="true" role="dialog">
+      <div class="warning-sigil">!</div><h2 id="confirmTitle">本当に実行しますか？</h2><p id="confirmText"></p><div><button id="confirmCancel" class="glass-button" type="button">キャンセル</button><button id="confirmOk" class="danger-button" type="button">実行する</button></div>
+    </section>
+
+    <div id="toastStack" aria-live="polite"></div>
+    <div id="bigWinOverlay" hidden><div class="big-win-rays"></div><p id="bigWinLabel">BIG WIN</p><strong id="bigWinAmount">+0 L</strong><small id="bigWinSub">THE PALACE REMEMBERS</small></div>
+    <div id="breakReminder" hidden><div><span>☾</span><h3>少し休憩しませんか？</h3><p>目を休めて、水分をとってから今夜の続きを楽しみましょう。</p><button id="closeBreakReminder" type="button">了解</button></div></div>
+  </div>
+
+  <script src="discord-config.js"></script>
+  <script src="activity-session.js"></script>
+  <script src="app.js"></script>
+  <script src="expansion.js"></script>
+  <script src="eternal.js"></script>
+  <script src="sovereign.js"></script>
+  <script src="economy.js"></script>
+  <script src="activity-bridge.js"></script>
+  <script src="blackjack-activity.js"></script>
+  <script src="roulette-activity.js"></script>
+  <script src="slots-activity.js"></script>
+  <script src="baccarat-activity.js"></script>
+  <script src="poker-activity.js"></script>
+  <script src="sicbo-activity.js"></script>
+  <script src="keno-activity.js"></script>
+  <script src="expansion-activity.js"></script>
+</body>
+</html>

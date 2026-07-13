@@ -4,9 +4,28 @@ import cookieSession from "cookie-session";
 import cors from "cors";
 import express, { type ErrorRequestHandler, type Request } from "express";
 import helmet from "helmet";
+import { z } from "zod";
 import { exchangeDiscordCode, mockDiscordUser } from "./auth/discord.js";
+import { BlackjackService, FileBlackjackRoundStore, type BlackjackAction } from "./casino/blackjack.js";
+import { BaccaratService, FileBaccaratRoundStore } from "./casino/baccarat.js";
+import { FileRouletteRoundStore, RouletteService } from "./casino/roulette.js";
+import { FilePokerRoundStore, PokerService } from "./casino/poker.js";
+import { FileSicBoRoundStore, SicBoService } from "./casino/sicbo.js";
+import { FileKenoRoundStore, KenoService } from "./casino/keno.js";
+import { DragonService, FileDragonRoundStore } from "./casino/dragon.js";
+import { FileWheelRoundStore, WheelService } from "./casino/wheel.js";
+import { CrapsService, FileCrapsRoundStore } from "./casino/craps.js";
+import { FilePlinkoRoundStore, PlinkoService } from "./casino/plinko.js";
+import { FileHiLoRoundStore, HiLoService } from "./casino/hilo.js";
+import { FileMinesRoundStore, MinesService } from "./casino/mines.js";
+import { FileWarRoundStore, WarService } from "./casino/war.js";
+import { BingoService, FileBingoStore } from "./casino/bingo.js";
+import { FileScratchStore, ScratchService } from "./casino/scratch.js";
+import { FileLegacyGameStore, LegacyGamesService } from "./casino/legacy-games.js";
+import { FileSlotsRoundStore, SlotsService } from "./casino/slots.js";
 import { loadEnv, type ServerEnv } from "./env.js";
 import { AppError, asyncRoute, sendError } from "./errors.js";
+import { createRateLimit } from "./middleware/rate-limit.js";
 import { getWalletForDiscordUser } from "./services/wallet.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -19,6 +38,7 @@ export interface CreateAppOptions {
   env?: Record<string, unknown>;
   fetch?: FetchLike;
   logger?: AppLogger;
+  webDistPath?: string;
 }
 
 type IrisSession = CookieSessionInterfaces.CookieSessionObject & {
@@ -30,16 +50,71 @@ export function createApp(options: CreateAppOptions = {}) {
   const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
   const logger = options.logger ?? console;
   const app = express();
+  const activityCookieDomain = cookieDomain(env);
+  const blackjack = new BlackjackService({
+    env,
+    fetch: fetchFn,
+    store: new FileBlackjackRoundStore(env.CASINO_STATE_PATH)
+  });
+  const baccarat = new BaccaratService({ env, fetch: fetchFn, store: new FileBaccaratRoundStore(env.BACCARAT_STATE_PATH) });
+  const roulette = new RouletteService({ env, fetch: fetchFn, store: new FileRouletteRoundStore(env.ROULETTE_STATE_PATH) });
+  const slots = new SlotsService({ env, fetch: fetchFn, store: new FileSlotsRoundStore(env.SLOTS_STATE_PATH) });
+  const poker = new PokerService({ env, fetch: fetchFn, store: new FilePokerRoundStore(env.POKER_STATE_PATH) });
+  const sicbo = new SicBoService({ env, fetch: fetchFn, store: new FileSicBoRoundStore(env.SICBO_STATE_PATH) });
+  const keno = new KenoService({ env, fetch: fetchFn, store: new FileKenoRoundStore(env.KENO_STATE_PATH) });
+  const dragon = new DragonService({ env, fetch: fetchFn, store: new FileDragonRoundStore(env.DRAGON_STATE_PATH) });
+  const wheel = new WheelService({ env, fetch: fetchFn, store: new FileWheelRoundStore(env.WHEEL_STATE_PATH) });
+  const craps = new CrapsService({ env, fetch: fetchFn, store: new FileCrapsRoundStore(env.CRAPS_STATE_PATH) });
+  const plinko = new PlinkoService({ env, fetch: fetchFn, store: new FilePlinkoRoundStore(env.PLINKO_STATE_PATH) });
+  const hilo = new HiLoService({ env, fetch: fetchFn, store: new FileHiLoRoundStore(env.HILO_STATE_PATH) });
+  const mines = new MinesService({ env, fetch: fetchFn, store: new FileMinesRoundStore(env.MINES_STATE_PATH) });
+  const war = new WarService({ env, fetch: fetchFn, store: new FileWarRoundStore(env.WAR_STATE_PATH) });
+  const bingo = new BingoService({ env, fetch: fetchFn, store: new FileBingoStore(env.BINGO_STATE_PATH) });
+  const scratch = new ScratchService({ env, fetch: fetchFn, store: new FileScratchStore(env.SCRATCH_STATE_PATH) });
+  const legacyGames = new LegacyGamesService({ env, fetch: fetchFn, store: new FileLegacyGameStore(env.LEGACY_GAMES_STATE_PATH) });
+  const reconciliation = Promise.all([
+    roulette.reconcileAll(),
+    slots.reconcileAll(),
+    baccarat.reconcileAll(),
+    poker.reconcileAll(),
+    sicbo.reconcileAll(),
+    keno.reconcileAll(),
+    dragon.reconcileAll(),
+    wheel.reconcileAll(),
+    craps.reconcileAll(),
+    plinko.reconcileAll(),
+    hilo.reconcileAll(),
+    mines.reconcileAll(),
+    war.reconcileAll(),
+    bingo.reconcileAll(),
+    scratch.reconcileAll(),
+    legacyGames.reconcileAll()
+  ]);
+  void reconciliation.catch((error: unknown) => logger.error("casino_reconcile_failed", {
+    message: error instanceof Error ? error.message : "unknown reconciliation error"
+  }));
+  app.locals.reconciliation = reconciliation;
 
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
 
   app.use(helmet());
+  if (options.webDistPath) {
+    app.use(express.static(options.webDistPath, {
+      setHeaders(res, path) {
+        if (path.endsWith("index.html")) {
+          res.setHeader("Cache-Control", "no-store");
+          return;
+        }
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      }
+    }));
+  }
   app.use(
     cors({
       credentials: true,
       origin(origin, callback) {
-        if (!origin || origin === env.WEB_ORIGIN) {
+        if (!origin || origin === env.WEB_ORIGIN || origin === activityOrigin(activityCookieDomain)) {
           callback(null, true);
           return;
         }
@@ -48,13 +123,22 @@ export function createApp(options: CreateAppOptions = {}) {
     })
   );
   app.use(express.json({ limit: "16kb" }));
+  app.use("/api", (_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  });
+  app.use("/api", createRateLimit({ max: 600, windowMs: 60_000, key: requestIp }));
+  app.use("/api/auth", createRateLimit({ max: 60, windowMs: 60_000, key: requestIp }));
+  app.use("/api/games", createRateLimit({ max: 300, windowMs: 60_000, key: requestPlayer }));
   app.use(
     cookieSession({
       name: "iris_session",
       keys: [sessionSecret(env)],
       httpOnly: true,
-      sameSite: "lax",
+      domain: activityCookieDomain,
+      sameSite: env.DISCORD_ACTIVITY_MODE ? "none" : "lax",
       secure: env.NODE_ENV === "production",
+      partitioned: env.DISCORD_ACTIVITY_MODE,
       maxAge: 1000 * 60 * 60 * 8
     })
   );
@@ -64,6 +148,14 @@ export function createApp(options: CreateAppOptions = {}) {
       ok: true,
       service: "iris-casino-activity",
       version: "0.1.0"
+    });
+  });
+
+  app.get("/api/config", (_req, res) => {
+    res.json({
+      ok: true,
+      discordClientId: env.DISCORD_CLIENT_ID,
+      mockAuth: env.IRIS_MOCK_AUTH
     });
   });
 
@@ -105,7 +197,344 @@ export function createApp(options: CreateAppOptions = {}) {
     })
   );
 
-  app.use((_req, _res, next) => {
+  app.post(
+    "/api/games/blackjack/rounds",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Blackjack bet is invalid.");
+
+      const round = await blackjack.start(user, parsed.data.roundId, parsed.data.bet);
+      res.status(201).json({ ok: true, round: blackjack.publicState(round) });
+    })
+  );
+
+  app.get(
+    "/api/games/blackjack/rounds/:roundId",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const roundId = req.params.roundId;
+      if (!roundId) throw new AppError(400, "bad_request", "Blackjack round is invalid.");
+      const round = await blackjack.get(user, roundId);
+      res.json({ ok: true, round: blackjack.publicState(round) });
+    })
+  );
+
+  app.post(
+    "/api/games/blackjack/rounds/:roundId/actions",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const roundId = req.params.roundId;
+      if (!roundId) throw new AppError(400, "bad_request", "Blackjack round is invalid.");
+      const parsed = z.object({ actionId: z.string().min(1).max(128), action: z.enum(["hit", "stand", "double", "split"]) }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Blackjack action is invalid.");
+
+      const round = await blackjack.act(user, roundId, parsed.data.actionId, parsed.data.action as BlackjackAction);
+      res.json({ ok: true, round: blackjack.publicState(round) });
+    })
+  );
+
+  app.post(
+    "/api/games/scratch/tickets",
+    asyncRoute(async (req, res) => { const user=getSession(req).user;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");const p=z.object({ticketId:z.string().min(1).max(128),bet:z.number().int().positive().safe()}).safeParse(req.body);if(!p.success)throw new AppError(400,"bad_request","Scratch ticket invalid.");res.status(201).json({ok:true,ticket:await scratch.issue(user,p.data.ticketId,p.data.bet)}); })
+  );
+  app.post(
+    "/api/games/scratch/tickets/:ticketId/reveal",
+    asyncRoute(async (req, res) => { const user=getSession(req).user, id=req.params.ticketId;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");const p=z.object({actionId:z.string().min(1).max(128),index:z.number().int()}).safeParse(req.body);if(!id||!p.success)throw new AppError(400,"bad_request","Scratch reveal invalid.");res.json({ok:true,ticket:await scratch.reveal(user,id,p.data.actionId,p.data.index)}); })
+  );
+  app.post(
+    "/api/games/scratch/tickets/:ticketId/reveal-all",
+    asyncRoute(async (req, res) => { const user=getSession(req).user, id=req.params.ticketId;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");const p=z.object({actionId:z.string().min(1).max(128)}).safeParse(req.body);if(!id||!p.success)throw new AppError(400,"bad_request","Scratch reveal invalid.");res.json({ok:true,ticket:await scratch.revealAll(user,id,p.data.actionId)}); })
+  );
+
+  app.post(
+    "/api/games/bingo/draws",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ drawId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Bingo ticket is invalid.");
+      res.json({ ok: true, draw: await bingo.play(user, parsed.data.drawId, parsed.data.bet) });
+    })
+  );
+
+  app.post(
+    "/api/games/war/rounds",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "War round is invalid.");
+      res.status(201).json({ ok: true, round: await war.deal(user, parsed.data.roundId, parsed.data.bet) });
+    })
+  );
+
+  app.post(
+    "/api/games/war/rounds/:roundId/actions",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user; const roundId = req.params.roundId;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ actionId: z.string().min(1).max(128), action: z.enum(["surrender", "war"]) }).safeParse(req.body);
+      if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "War action is invalid.");
+      res.json({ ok: true, round: await war.act(user, roundId, parsed.data.actionId, parsed.data.action) });
+    })
+  );
+
+  app.post(
+    "/api/games/mines/rounds",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe(), mineCount: z.number().int() }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Mines round is invalid.");
+      res.status(201).json({ ok: true, round: await mines.start(user, parsed.data.roundId, parsed.data.bet, parsed.data.mineCount) });
+    })
+  );
+
+  app.post(
+    "/api/games/mines/rounds/:roundId/reveal",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user; const roundId = req.params.roundId;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ actionId: z.string().min(1).max(128), index: z.number().int() }).safeParse(req.body);
+      if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Mines reveal is invalid.");
+      res.json({ ok: true, round: await mines.reveal(user, roundId, parsed.data.actionId, parsed.data.index) });
+    })
+  );
+
+  app.post(
+    "/api/games/mines/rounds/:roundId/cash",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user; const roundId = req.params.roundId;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ actionId: z.string().min(1).max(128) }).safeParse(req.body);
+      if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Mines cash action is invalid.");
+      res.json({ ok: true, round: await mines.cash(user, roundId, parsed.data.actionId) });
+    })
+  );
+
+  app.post(
+    "/api/games/hilo/rounds",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Hi-Lo round is invalid.");
+      const round = await hilo.start(user, parsed.data.roundId, parsed.data.bet);
+      res.status(201).json({ ok: true, round });
+    })
+  );
+
+  app.post(
+    "/api/games/hilo/rounds/:roundId/guess",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user; const roundId = req.params.roundId;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ actionId: z.string().min(1).max(128), direction: z.enum(["low", "high"]) }).safeParse(req.body);
+      if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Hi-Lo guess is invalid.");
+      const round = await hilo.guess(user, roundId, parsed.data.actionId, parsed.data.direction);
+      res.json({ ok: true, round });
+    })
+  );
+
+  app.post(
+    "/api/games/hilo/rounds/:roundId/cash",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user; const roundId = req.params.roundId;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ actionId: z.string().min(1).max(128) }).safeParse(req.body);
+      if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Hi-Lo cash action is invalid.");
+      const round = await hilo.cash(user, roundId, parsed.data.actionId);
+      res.json({ ok: true, round });
+    })
+  );
+
+  app.post(
+    "/api/games/plinko/drops",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ dropId: z.string().min(1).max(128), bet: z.number().int().positive().safe(), risk: z.enum(["low", "medium", "high"]) }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Plinko drop is invalid.");
+      const drop = await plinko.drop(user, parsed.data.dropId, parsed.data.bet, parsed.data.risk);
+      res.json({ ok: true, drop });
+    })
+  );
+
+  app.post(
+    "/api/games/craps/rounds",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ roundId: z.string().min(1).max(128), selection: z.enum(["pass", "dont", "field", "any7", "exact6", "exact8"]), bet: z.number().int().positive().safe() }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Craps round is invalid.");
+      const round = await craps.start(user, parsed.data.roundId, parsed.data.selection, parsed.data.bet);
+      res.json({ ok: true, round });
+    })
+  );
+
+  app.post(
+    "/api/games/craps/rounds/:roundId/roll",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      const roundId = req.params.roundId;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ actionId: z.string().min(1).max(128) }).safeParse(req.body);
+      if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Craps round is invalid.");
+      const round = await craps.roll(user, roundId, parsed.data.actionId);
+      res.json({ ok: true, round });
+    })
+  );
+
+  app.post(
+    "/api/games/dragon/rounds",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ roundId: z.string().min(1).max(128), selection: z.enum(["dragon", "tiger", "tie", "suited"]), bet: z.number().int().positive().safe() }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Dragon round is invalid.");
+      const round = await dragon.deal(user, parsed.data.roundId, parsed.data.selection, parsed.data.bet);
+      res.json({ ok: true, round });
+    })
+  );
+
+  app.post(
+    "/api/games/wheel/spins",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ spinId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Wheel spin is invalid.");
+      const spin = await wheel.spin(user, parsed.data.spinId, parsed.data.bet);
+      res.json({ ok: true, spin });
+    })
+  );
+
+  app.post(
+    "/api/games/keno/draws",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ drawId: z.string().min(1).max(128), bet: z.number().int().positive().safe(), picks: z.array(z.number().int().min(1).max(40)).min(5).max(10) }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Keno draw is invalid.");
+      const draw = await keno.draw(user, parsed.data.drawId, parsed.data.bet, parsed.data.picks);
+      res.json({ ok: true, draw });
+    })
+  );
+
+  app.post(
+    "/api/games/sicbo/spins",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ spinId: z.string().min(1).max(128), bets: z.array(z.object({ selection: z.string().min(1).max(32), amount: z.number().int().positive().safe() })).min(1).max(64) }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Sic Bo spin is invalid.");
+      const spin = await sicbo.roll(user, parsed.data.spinId, parsed.data.bets);
+      res.json({ ok: true, spin });
+    })
+  );
+
+  app.post(
+    "/api/games/poker/rounds",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Poker round is invalid.");
+      const round = await poker.deal(user, parsed.data.roundId, parsed.data.bet);
+      res.status(201).json({ ok: true, round });
+    })
+  );
+
+  app.post(
+    "/api/games/poker/rounds/:roundId/draw",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const roundId = req.params.roundId;
+      const parsed = z.object({ held: z.array(z.boolean()).length(5) }).safeParse(req.body);
+      if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Poker draw is invalid.");
+      const round = await poker.draw(user, roundId, parsed.data.held);
+      res.json({ ok: true, round });
+    })
+  );
+
+  app.post(
+    "/api/games/baccarat/rounds",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({
+        roundId: z.string().min(1).max(128),
+        bets: z.array(z.object({ selection: z.enum(["player", "banker", "tie", "playerPair", "bankerPair"]), amount: z.number().int().positive().safe() })).min(1).max(5)
+      }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Baccarat round is invalid.");
+      const round = await baccarat.deal(user, parsed.data.roundId, parsed.data.bets);
+      res.json({ ok: true, round });
+    })
+  );
+
+  app.post(
+    "/api/games/roulette/spins",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({
+        spinId: z.string().min(1).max(128),
+        bets: z.array(z.object({ selection: z.string().min(1).max(32), amount: z.number().int().positive().safe() })).min(1).max(64)
+      }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Roulette spin is invalid.");
+
+      const round = await roulette.spin(user, parsed.data.spinId, parsed.data.bets);
+      res.json({ ok: true, spin: round });
+    })
+  );
+
+  app.post(
+    "/api/games/slots/spins",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ spinId: z.string().min(1).max(128), bet: z.number().int() }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Slots spin is invalid.");
+      const spin = await slots.spin(user, parsed.data.spinId, parsed.data.bet);
+      res.json({ ok: true, spin });
+    })
+  );
+
+  app.post(
+    "/api/games/:game/rounds",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe(), pairPlus: z.boolean().optional(), selection: z.number().int().optional(), auto: z.number().finite().optional() }).safeParse(req.body);
+      const game = req.params.game;
+      if (!parsed.success || !game || !["holdem", "tower", "threecard", "derby", "ascent", "arcana", "moonshot"].includes(game)) throw new AppError(400, "bad_request", "Game round is invalid.");
+      const round = await legacyGames.start(user, game as "holdem" | "tower" | "threecard" | "derby" | "ascent" | "arcana" | "moonshot", parsed.data.roundId, parsed.data.bet, parsed.data);
+      res.status(201).json({ ok: true, round });
+    })
+  );
+
+  app.post(
+    "/api/games/:game/rounds/:roundId/actions",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user; const game = req.params.game; const roundId = req.params.roundId;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ actionId: z.string().min(1).max(128), action: z.string().min(1).max(32), door: z.number().int().optional(), index: z.number().int().optional() }).safeParse(req.body);
+      if (!roundId || !game || !parsed.success || !["holdem", "tower", "threecard", "ascent", "arcana", "moonshot"].includes(game)) throw new AppError(400, "bad_request", "Game action is invalid.");
+      const round = await legacyGames.action(user, roundId, parsed.data.actionId, parsed.data.action, parsed.data);
+      res.json({ ok: true, round });
+    })
+  );
+
+  app.use((req, res, next) => {
+    if (options.webDistPath && req.method === "GET" && !req.path.startsWith("/api/")) {
+      res.sendFile("index.html", { root: options.webDistPath });
+      return;
+    }
     next(new AppError(404, "not_found", "Route was not found."));
   });
 
@@ -130,4 +559,21 @@ function getSession(req: Request): IrisSession {
 
 function sessionSecret(env: ServerEnv): string {
   return env.SESSION_SECRET || "dev-only-session-secret-change-me";
+}
+
+function cookieDomain(env: ServerEnv): string | undefined {
+  if (!env.DISCORD_ACTIVITY_MODE) return undefined;
+  return env.ACTIVITY_COOKIE_DOMAIN || `${env.DISCORD_CLIENT_ID}.discordsays.com`;
+}
+
+function activityOrigin(domain: string | undefined): string | undefined {
+  return domain ? `https://${domain}` : undefined;
+}
+
+function requestIp(req: Request): string {
+  return req.ip || "unknown";
+}
+
+function requestPlayer(req: Request): string {
+  return getSession(req).user?.id || requestIp(req);
 }

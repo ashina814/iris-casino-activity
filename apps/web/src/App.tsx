@@ -1,38 +1,20 @@
 import type { DiscordUser } from "@iris/shared";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { exchangeAuthCode } from "./lib/api.js";
+import { getDiscordAuthorizationCode } from "./lib/discord.js";
 import { AuthenticatingScreen } from "./screens/AuthenticatingScreen.js";
 import { EntranceScreen } from "./screens/EntranceScreen.js";
 import { ErrorScreen } from "./screens/ErrorScreen.js";
-import { LobbyScreen } from "./screens/LobbyScreen.js";
+import { LuxCasinoScreen } from "./screens/LuxCasinoScreen.js";
 import { OpeningScreen } from "./screens/OpeningScreen.js";
-import { exchangeAuthCode, getWallet } from "./lib/api.js";
-import { getDiscordAuthorizationCode } from "./lib/discord.js";
 
-type Screen = "entrance" | "authenticating" | "opening" | "lobby" | "error";
+type Screen = "entrance" | "authenticating" | "opening" | "casino" | "error";
 
 export function App() {
   const [screen, setScreen] = useState<Screen>("entrance");
   const [user, setUser] = useState<DiscordUser | null>(null);
-  const [wallet, setWallet] = useState<number | null>(null);
-  const [walletError, setWalletError] = useState<string | null>(null);
-  const [loadingWallet, setLoadingWallet] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
   const openingTimer = useRef<number | null>(null);
-
-  const refreshWallet = useCallback(async () => {
-    setLoadingWallet(true);
-    setWalletError(null);
-
-    try {
-      const response = await getWallet();
-      setWallet(response.wallet);
-    } catch {
-      setWallet(null);
-      setWalletError("残高を取得できませんでした。時間をおいて再試行してください。");
-    } finally {
-      setLoadingWallet(false);
-    }
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -53,17 +35,16 @@ export function App() {
       setScreen("opening");
 
       openingTimer.current = window.setTimeout(() => {
-        setScreen("lobby");
-        void refreshWallet();
+        setScreen("casino");
       }, 1100);
     } catch {
-      setFatalError("Discord認証に失敗しました。設定を確認してから再試行してください。");
+      setFatalError("Discord authentication failed. Check your setup and try again.");
       setScreen("error");
     }
   }
 
   return (
-    <main className="activity-shell">
+    <main className={`activity-shell${screen === "casino" ? " activity-shell--lux" : ""}`}>
       <div className="stars" aria-hidden="true">
         <span />
         <span />
@@ -73,18 +54,10 @@ export function App() {
       {screen === "entrance" ? <EntranceScreen onEnter={enterLounge} /> : null}
       {screen === "authenticating" ? <AuthenticatingScreen /> : null}
       {screen === "opening" && user ? <OpeningScreen user={user} /> : null}
-      {screen === "lobby" && user ? (
-        <LobbyScreen
-          user={user}
-          wallet={wallet}
-          walletError={walletError}
-          loadingWallet={loadingWallet}
-          onRefreshWallet={refreshWallet}
-        />
-      ) : null}
+      {screen === "casino" && user ? <LuxCasinoScreen user={user} /> : null}
       {screen === "error" ? (
         <ErrorScreen
-          message={fatalError ?? "不明なエラーが発生しました。"}
+          message={fatalError ?? "An unexpected error occurred."}
           onRetry={() => setScreen("entrance")}
         />
       ) : null}

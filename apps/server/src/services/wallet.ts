@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ServerEnv } from "../env.js";
 import { AppError } from "../errors.js";
+import { getMockCasinoWallet } from "./casino-economy.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -17,7 +18,7 @@ export async function getWalletForDiscordUser(
   fetchFn: FetchLike
 ): Promise<WalletResult> {
   if (env.IRIS_MOCK_WALLET) {
-    return { wallet: 12500, currency: "Ris" };
+    return { wallet: getMockCasinoWallet(discordUserId), currency: "Ris" };
   }
 
   if (!env.IRIS_ECONOMY_API_KEY) {

@@ -1,0 +1,2 @@
+window.LUX_NOCTIS_DISCORD_CLIENT_ID = "";
+window.LUX_STATIC_MODE = true;

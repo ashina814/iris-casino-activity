@@ -1,0 +1,16 @@
+{
+  "name": "LUX NOCTIS TREASURY REFORM",
+  "short_name": "LUX NOCTIS",
+  "description": "23 play-money casino games, a treasury-controlled economy, progression, collections, co-op content and five live PvP modes.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#08050f",
+  "theme_color": "#090611",
+  "icons": [
+    {
+      "src": "assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

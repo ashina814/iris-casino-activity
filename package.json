@@ -11,6 +11,7 @@
     "dev": "npm run build --workspace @iris/shared && concurrently -n web,server -c magenta,cyan \"npm run dev:web\" \"npm run dev:server\"",
     "dev:web": "npm run dev --workspace @iris/web",
     "dev:server": "npm run dev --workspace @iris/server",
+    "start": "node apps/server/dist/index.js",
     "build": "npm run build --workspace @iris/shared && npm run build --workspace @iris/server && npm run build --workspace @iris/web",
     "check": "npm run lint && npm run typecheck && npm run test && npm run build",
     "test": "npm run build --workspace @iris/shared && npm run test --workspace @iris/shared && npm run test --workspace @iris/server && npm run test --workspace @iris/web",

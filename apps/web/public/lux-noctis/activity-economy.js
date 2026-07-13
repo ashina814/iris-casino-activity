@@ -5,7 +5,9 @@
   if (!app) return;
 
   let busy = false;
+  let reliefBusy = false;
   let treasuryBusy = false;
+  const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
     if (!daily || typeof daily !== "object") return;
@@ -57,9 +59,50 @@
     return payload.treasury;
   }
 
+  async function requestRelief() {
+    const response = await fetch("/api/economy/relief", { method: "POST", credentials: "include" });
+    if (!response.ok) throw new Error("relief unavailable");
+    const payload = await response.json();
+    if (!payload?.ok || !payload.relief) throw new Error("invalid relief response");
+    return payload.relief;
+  }
+
   function purchaseId() {
     if (window.crypto?.randomUUID) return window.crypto.randomUUID().replace(/-/g, "");
     return `purchase${Date.now()}${Math.random().toString(36).slice(2)}`;
+  }
+
+  function pendingPurchaseStorageKey(key) {
+    return `iris-pending-treasury-${window.LUX_ACTIVITY_USER.id}-${key}`;
+  }
+
+  function loadPendingPurchase(key) {
+    const memoryValue = pendingPurchases.get(key);
+    if (memoryValue) return memoryValue;
+    try {
+      const storedValue = window.sessionStorage.getItem(pendingPurchaseStorageKey(key));
+      return /^[A-Za-z0-9_-]{8,80}$/.test(storedValue || "") ? storedValue : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function savePendingPurchase(key, value) {
+    pendingPurchases.set(key, value);
+    try {
+      window.sessionStorage.setItem(pendingPurchaseStorageKey(key), value);
+    } catch {
+      // The in-memory value still protects retries in this page.
+    }
+  }
+
+  function clearPendingPurchase(key) {
+    pendingPurchases.delete(key);
+    try {
+      window.sessionStorage.removeItem(pendingPurchaseStorageKey(key));
+    } catch {
+      // Nothing further is required when browser storage is unavailable.
+    }
   }
 
   app.claimDaily = async function () {
@@ -87,16 +130,46 @@
     }
   };
 
+  app.maybeRelief = async function () {
+    if (reliefBusy) return;
+    reliefBusy = true;
+    try {
+      const relief = await requestRelief();
+      if (!relief.claimed) return;
+      window.__IRIS_SET_WALLET?.(relief.wallet);
+      this.profile.data.lastRelief = Date.now();
+      if (this.profile.data.economy) this.profile.data.economy.reliefUsed = true;
+      this.profile.save();
+      this.audio.play("chime");
+      this.toast("PALACE RELIEF", `RIS wallet was restored by ${relief.amount.toLocaleString("ja-JP")} Ris.`, "R");
+    } catch {
+      // A later settled round will retry the server-owned eligibility check.
+    } finally {
+      reliefBusy = false;
+    }
+  };
+
+  const recordRemoteProgress = app.recordRemoteProgress;
+  app.recordRemoteProgress = function (...args) {
+    const result = recordRemoteProgress.apply(this, args);
+    void this.maybeRelief();
+    return result;
+  };
+
   if (app.economy) {
     app.economy.buy = async function (id, pay) {
       if (treasuryBusy) return;
       treasuryBusy = true;
+      const key = `${id}:${pay}`;
+      const idempotencyKey = loadPendingPurchase(key) || purchaseId();
+      savePendingPurchase(key, idempotencyKey);
       try {
         const treasury = await requestTreasury("/api/economy/treasury/purchases", "POST", {
-          purchaseId: purchaseId(),
+          purchaseId: idempotencyKey,
           itemId: id,
           pay
         });
+        clearPendingPurchase(key);
         applyTreasuryState(treasury);
         if (id === "stardust" && this.app.ascension) this.app.ascension.data.stardust += 250;
         if (id === "capsule" && this.app.ascension) this.app.ascension.data.capsules += 1;

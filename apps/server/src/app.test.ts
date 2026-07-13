@@ -254,6 +254,36 @@ describe("server API", () => {
     expect(status.body.daily).toMatchObject({ claimed: true, reserve: 1850, wallet: 26150 });
   });
 
+  it("moves the one-time low-balance relief grant to the RIS ledger", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ wallet: 50, currency: "Ris" }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, wallet: 2500, currency: "Ris" }))
+      .mockResolvedValueOnce(jsonResponse({ wallet: 2500, currency: "Ris" }));
+    const app = createApp({
+      env: {
+        ...baseEnv,
+        ACTIVITY_PROGRESS_STATE_PATH: `C:\\tmp\\iris-casino-activity-test-relief-${Date.now()}.json`
+      },
+      fetch: fetchMock,
+      logger: silentLogger
+    });
+    const agent = request.agent(app);
+    await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+
+    const claim = await agent.post("/api/economy/relief").expect(200);
+
+    expect(claim.body.relief).toEqual({ claimed: true, amount: 2450, wallet: 2500, currency: "Ris" });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://economy.local/internal/v1/activity/adjustments",
+      expect.objectContaining({ body: expect.stringContaining('"reason":"relief"') })
+    );
+
+    const duplicate = await agent.post("/api/economy/relief").expect(200);
+    expect(duplicate.body.relief).toEqual({ claimed: false, amount: 0, wallet: 2500, currency: "Ris" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it("settles treasury coin purchases through one idempotent RIS debit", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ wallet: 40000, currency: "Ris" }))

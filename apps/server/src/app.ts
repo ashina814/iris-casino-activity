@@ -217,6 +217,15 @@ export function createApp(options: CreateAppOptions = {}) {
     })
   );
 
+  app.post(
+    "/api/economy/relief",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      res.json({ ok: true, relief: await activityEconomy.claimRelief(user) });
+    })
+  );
+
   app.get(
     "/api/economy/treasury",
     asyncRoute(async (req, res) => {

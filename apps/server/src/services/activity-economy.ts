@@ -14,6 +14,7 @@ type ActivityProgress = {
   reserve: number;
   notes: number;
   noteRemainder: number;
+  reliefClaimed: boolean;
   seals: number;
   purchases: Record<TreasuryItemId, number>;
   purchaseRequests: Record<string, { itemId: TreasuryItemId; pay: TreasuryPay }>;
@@ -84,6 +85,28 @@ export class ActivityEconomyService {
     const progress = this.progressFor(user.id);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
     return this.publicTreasury(progress, wallet.wallet, wallet.currency);
+  }
+
+  async claimRelief(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    if (progress.reliefClaimed || wallet.wallet >= 100) {
+      return { claimed: false, amount: 0, wallet: wallet.wallet, currency: wallet.currency };
+    }
+
+    const amount = 2500 - wallet.wallet;
+    const result = await requestActivityAdjustment({
+      transactionId: `activity-relief-${user.id}`,
+      discordUserId: user.id,
+      sessionId: "relief",
+      operation: "credit",
+      amount,
+      reason: "relief"
+    }, this.options.env, this.options.fetch);
+
+    this.state.users[user.id] = { ...progress, reliefClaimed: true };
+    this.options.store.save(this.state);
+    return { claimed: true, amount, wallet: result.wallet, currency: result.currency };
   }
 
   async purchaseTreasury(user: DiscordUser, purchaseId: string, itemId: TreasuryItemId, pay: TreasuryPay) {
@@ -260,6 +283,7 @@ function normalizeProgress(value: unknown): ActivityProgress {
     reserve: safeNonNegativeInteger(raw.reserve, 3000),
     notes: safeNonNegativeInteger(raw.notes),
     noteRemainder: safeNonNegativeInteger(raw.noteRemainder),
+    reliefClaimed: raw.reliefClaimed === true,
     seals: safeNonNegativeInteger(raw.seals),
     purchases: normalizePurchases(raw.purchases),
     purchaseRequests: normalizePurchaseRequests(raw.purchaseRequests)
@@ -273,6 +297,7 @@ function initialProgress(): ActivityProgress {
     reserve: 3000,
     notes: 0,
     noteRemainder: 0,
+    reliefClaimed: false,
     seals: 0,
     purchases: normalizePurchases(),
     purchaseRequests: {}

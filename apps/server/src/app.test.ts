@@ -158,6 +158,24 @@ describe("server API", () => {
     expect(res.body.error.code).toBe("unauthorized");
   });
 
+  it("uses the authenticated Discord identity for Party rooms", async () => {
+    const agent = await authenticatedAgent();
+    const joined = await agent.post("/api/party/join").send({
+      room: "night-test",
+      appearance: { level: 7, game: "Lobby", glyph: "R" },
+      name: "forged-name"
+    }).expect(200);
+
+    expect(joined.body.players).toEqual([{ id: "234567890123456789", name: "Yuki", level: 7, game: "Lobby", glyph: "R" }]);
+
+    const event = await agent.post("/api/party/events").send({
+      room: "night-test",
+      kind: "reaction",
+      payload: { emoji: "OK" }
+    }).expect(200);
+    expect(event.body.feed[0]).toMatchObject({ text: "Yuki: OK" });
+  });
+
   it("converts a successful Economy API wallet response", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({ wallet: 12500, currency: "Ris" })

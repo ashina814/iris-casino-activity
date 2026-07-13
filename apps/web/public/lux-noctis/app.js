@@ -240,13 +240,13 @@ class RoomClient {
   async start(){
     if(this.staticMode||!this.room){this.offline();return}
     try{
-      const r=await fetch('/api/join',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room:this.room,id:this.app.profile.data.id,name:this.app.profile.data.name,glyph:this.app.avatarGlyph()})});
+      const r=await fetch('/api/party/join',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({room:this.room,appearance:{level:this.app.profile.data.level,game:'ロビー',glyph:this.app.avatarGlyph()}})});
       if(!r.ok)throw new Error('join');const state=await r.json();this.online=true;this.players=state.players||[];this.crown=state.crown||0;this.feed=state.feed||[];this.connectEvents();this.render();this.timer=setInterval(()=>this.presence(),7000);this.presence();
     }catch{this.offline()}
   }
   offline(){this.online=false;this.players=[{id:this.app.profile.data.id,name:this.app.profile.data.name,level:this.app.profile.data.level,game:'ロビー',glyph:this.app.avatarGlyph()}];this.render()}
   connectEvents(){
-    try{this.es=new EventSource(`/api/events?room=${encodeURIComponent(this.room)}`);this.es.onmessage=e=>{try{this.handle(JSON.parse(e.data))}catch{}};this.es.onerror=()=>{};}catch{}
+    try{this.es=new EventSource(`/api/party/events?room=${encodeURIComponent(this.room)}`);this.es.onmessage=e=>{try{this.handle(JSON.parse(e.data))}catch{}};this.es.onerror=()=>{};}catch{}
   }
   handle(msg){
     if(msg.type==='state'){this.players=msg.players||this.players;this.crown=msg.crown??this.crown;this.feed=msg.feed||this.feed}
@@ -254,8 +254,8 @@ class RoomClient {
     if(msg.type==='crown'){this.crown=0;if(!this.claimedCrowns.has(msg.id)){this.claimedCrowns.add(msg.id);const paid=this.app.profile.credit(500,'party');if(paid>0)this.app.bigWin(paid,'PARTY CROWN','仲間全員に祝祭ボーナス');else this.app.toast('PARTY CROWN','報酬はCROWN NOTESとして保管されました。','♛')}}
     this.render();
   }
-  async presence(){if(!this.online)return;try{await fetch('/api/presence',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room:this.room,player:{id:this.app.profile.data.id,name:this.app.profile.data.name,level:this.app.profile.data.level,game:this.app.currentGame?this.app.gameMeta(this.app.currentGame).short:'ロビー',glyph:this.app.avatarGlyph(),balance:this.app.profile.data.balance}})})}catch{}}
-  async event(kind,payload={}){if(!this.online)return;try{await fetch('/api/event',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room:this.room,id:this.app.profile.data.id,name:this.app.profile.data.name,kind,payload})})}catch{}}
+  async presence(){if(!this.online)return;try{await fetch('/api/party/presence',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({room:this.room,appearance:{level:this.app.profile.data.level,game:this.app.currentGame?this.app.gameMeta(this.app.currentGame).short:'ロビー',glyph:this.app.avatarGlyph()}})})}catch{}}
+  async event(kind,payload={}){if(!this.online)return;try{await fetch('/api/party/events',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({room:this.room,kind,payload})})}catch{}}
   render(){
     const players=this.players.length?this.players:[{id:this.app.profile.data.id,name:this.app.profile.data.name,level:this.app.profile.data.level,game:'ロビー',glyph:this.app.avatarGlyph()}];
     $('#partyCount').textContent=players.length;$('#roomCodeLabel').textContent=this.online?this.room.toUpperCase():'OFFLINE';$('#roomCodeModal').textContent=this.online?this.room.toUpperCase():'OFFLINE';

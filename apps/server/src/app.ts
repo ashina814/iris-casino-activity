@@ -2,7 +2,7 @@ import type { DiscordUser } from "@iris/shared";
 import { AuthExchangeRequestSchema } from "@iris/shared";
 import cookieSession from "cookie-session";
 import cors from "cors";
-import express, { type ErrorRequestHandler, type Request } from "express";
+import express, { type ErrorRequestHandler, type Request, type Response as ExpressResponse } from "express";
 import helmet from "helmet";
 import { z } from "zod";
 import { exchangeDiscordCode, mockDiscordUser } from "./auth/discord.js";
@@ -28,6 +28,7 @@ import { AppError, asyncRoute, sendError } from "./errors.js";
 import { createRateLimit } from "./middleware/rate-limit.js";
 import { getWalletForDiscordUser } from "./services/wallet.js";
 import { ActivityEconomyService, FileActivityProgressStore, isPurchaseId, isTreasuryItemId, isTreasuryPay } from "./services/activity-economy.js";
+import { PartyService } from "./services/party.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -74,6 +75,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const scratch = new ScratchService({ env, fetch: fetchFn, store: new FileScratchStore(env.SCRATCH_STATE_PATH) });
   const legacyGames = new LegacyGamesService({ env, fetch: fetchFn, store: new FileLegacyGameStore(env.LEGACY_GAMES_STATE_PATH) });
   const activityEconomy = new ActivityEconomyService({ env, fetch: fetchFn, store: new FileActivityProgressStore(env.ACTIVITY_PROGRESS_STATE_PATH) });
+  const party = new PartyService();
   const reconciliation = Promise.all([
     roulette.reconcileAll(),
     slots.reconcileAll(),
@@ -247,6 +249,47 @@ export function createApp(options: CreateAppOptions = {}) {
       res.json({ ok: true, treasury: await activityEconomy.purchaseTreasury(user, parsed.data.purchaseId, parsed.data.itemId, parsed.data.pay) });
     })
   );
+
+  app.post(
+    "/api/party/join",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = partyRequestSchema.safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Party join is invalid.");
+      res.json(party.join(user, parsed.data.room, parsed.data.appearance));
+    })
+  );
+
+  app.post(
+    "/api/party/presence",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = partyRequestSchema.safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Party presence is invalid.");
+      res.json(party.presence(user, parsed.data.room, parsed.data.appearance));
+    })
+  );
+
+  app.post(
+    "/api/party/events",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ room: partyRoomSchema, kind: z.enum(["reaction", "win"]), payload: z.object({ emoji: z.string().max(8).optional() }).default({}) }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Party event is invalid.");
+      res.json(party.publish(user, parsed.data.room, parsed.data.kind, parsed.data.payload));
+    })
+  );
+
+  app.get("/api/party/events", (req, res) => {
+    const user = getSession(req).user;
+    const room = partyRoomSchema.safeParse(req.query.room);
+    if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+    if (!room.success) throw new AppError(400, "bad_request", "Party room is invalid.");
+    openPartyEventStream(res, req, party.subscribe(room.data, user.id, (message) => writePartyEvent(res, message)));
+  });
 
   app.post(
     "/api/games/blackjack/rounds",
@@ -627,6 +670,35 @@ function requestIp(req: Request): string {
 
 function requestPlayer(req: Request): string {
   return getSession(req).user?.id || requestIp(req);
+}
+
+const partyRoomSchema = z.string().regex(/^[A-Za-z0-9_-]{1,32}$/);
+const partyRequestSchema = z.object({
+  room: partyRoomSchema,
+  appearance: z.object({
+    level: z.number().int().min(1).max(999),
+    game: z.string().min(1).max(40),
+    glyph: z.string().min(1).max(8)
+  })
+});
+
+function openPartyEventStream(res: ExpressResponse, req: Request, unsubscribe: (() => void) | null) {
+  if (!unsubscribe) throw new AppError(404, "not_found", "Join the party room before subscribing.");
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+  const heartbeat = setInterval(() => res.write(": ping\n\n"), 15_000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
+function writePartyEvent(res: ExpressResponse, message: unknown) {
+  res.write(`data: ${JSON.stringify(message)}\n\n`);
 }
 
 function activityHelmetOptions(env: ServerEnv) {

@@ -254,6 +254,50 @@ describe("server API", () => {
     expect(status.body.daily).toMatchObject({ claimed: true, reserve: 1850, wallet: 26150 });
   });
 
+  it("settles treasury coin purchases through one idempotent RIS debit", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ wallet: 40000, currency: "Ris" }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, wallet: 32000, currency: "Ris" }))
+      .mockResolvedValueOnce(jsonResponse({ wallet: 32000, currency: "Ris" }));
+    const app = createApp({
+      env: {
+        ...baseEnv,
+        ACTIVITY_PROGRESS_STATE_PATH: `C:\\tmp\\iris-casino-activity-test-treasury-${Date.now()}.json`
+      },
+      fetch: fetchMock,
+      logger: silentLogger
+    });
+    const agent = request.agent(app);
+    await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+
+    const purchase = await agent.post("/api/economy/treasury/purchases").send({
+      purchaseId: "treasury001",
+      itemId: "stardust",
+      pay: "coins"
+    }).expect(200);
+
+    expect(purchase.body.treasury).toMatchObject({
+      itemId: "stardust",
+      pay: "coins",
+      wallet: 32000,
+      notes: 0,
+      purchases: { stardust: 1 }
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://economy.local/internal/v1/activity/adjustments",
+      expect.objectContaining({ body: expect.stringContaining('"reason":"treasury"') })
+    );
+
+    const duplicate = await agent.post("/api/economy/treasury/purchases").send({
+      purchaseId: "treasury001",
+      itemId: "stardust",
+      pay: "coins"
+    }).expect(200);
+    expect(duplicate.body.treasury).toMatchObject({ wallet: 32000, purchases: { stardust: 1 } });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it("does not expose secrets in error responses", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({ message: "super-secret-economy-key" }, 500)

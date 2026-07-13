@@ -5,6 +5,7 @@
   if (!app) return;
 
   let busy = false;
+  let treasuryBusy = false;
 
   function applyDailyState(daily) {
     if (!daily || typeof daily !== "object") return;
@@ -26,6 +27,39 @@
     const payload = await response.json();
     if (!payload?.ok || !payload.daily) throw new Error("invalid activity economy response");
     return payload.daily;
+  }
+
+  function applyTreasuryState(treasury) {
+    if (!treasury || typeof treasury !== "object") return;
+    const economy = app.profile.data.economy;
+    if (economy) {
+      if (Number.isInteger(treasury.reserve) && treasury.reserve >= 0) economy.reserve = treasury.reserve;
+      if (Number.isInteger(treasury.notes) && treasury.notes >= 0) economy.notes = treasury.notes;
+      if (Number.isInteger(treasury.seals) && treasury.seals >= 0) economy.seals = treasury.seals;
+      if (treasury.purchases && typeof treasury.purchases === "object") economy.purchases = { ...economy.purchases, ...treasury.purchases };
+    }
+    if (Number.isInteger(treasury.wallet) && treasury.wallet >= 0) window.__IRIS_SET_WALLET?.(treasury.wallet);
+    app.profile.save();
+    app.economy?.applySealVisual?.();
+    app.economy?.updateAll?.();
+  }
+
+  async function requestTreasury(path, method, body) {
+    const response = await fetch(path, {
+      method,
+      credentials: "include",
+      headers: body ? { "content-type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined
+    });
+    if (!response.ok) throw new Error("treasury unavailable");
+    const payload = await response.json();
+    if (!payload?.ok || !payload.treasury) throw new Error("invalid treasury response");
+    return payload.treasury;
+  }
+
+  function purchaseId() {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID().replace(/-/g, "");
+    return `purchase${Date.now()}${Math.random().toString(36).slice(2)}`;
   }
 
   app.claimDaily = async function () {
@@ -53,7 +87,40 @@
     }
   };
 
+  if (app.economy) {
+    app.economy.buy = async function (id, pay) {
+      if (treasuryBusy) return;
+      treasuryBusy = true;
+      try {
+        const treasury = await requestTreasury("/api/economy/treasury/purchases", "POST", {
+          purchaseId: purchaseId(),
+          itemId: id,
+          pay
+        });
+        applyTreasuryState(treasury);
+        if (id === "stardust" && this.app.ascension) this.app.ascension.data.stardust += 250;
+        if (id === "capsule" && this.app.ascension) this.app.ascension.data.capsules += 1;
+        if (id === "key" && this.app.eternal) this.app.eternal.data.keys += 1;
+        this.addLedger(pay === "notes" ? "notes" : "sink", pay === "notes" ? 0 : 1, `${id.toUpperCase()} / ${pay.toUpperCase()}`, "out");
+        this.app.ascension?.updateAll?.();
+        this.app.eternal?.updateAll?.();
+        this.app.audio.play("chime");
+        this.app.celebration.burst(0.28);
+        this.app.toast("TREASURY", "Exchange completed.", "T");
+        this.updateAll();
+        setTimeout(() => this.open("exchange"), 0);
+      } catch {
+        this.app.toast("TREASURY", "RIS ledger could not complete the exchange.", "!");
+      } finally {
+        treasuryBusy = false;
+      }
+    };
+  }
+
   request("/api/economy/daily", "GET")
     .then(applyDailyState)
+    .catch(() => {});
+  requestTreasury("/api/economy/treasury", "GET")
+    .then(applyTreasuryState)
     .catch(() => {});
 })();

@@ -27,7 +27,7 @@ import { loadEnv, type ServerEnv } from "./env.js";
 import { AppError, asyncRoute, sendError } from "./errors.js";
 import { createRateLimit } from "./middleware/rate-limit.js";
 import { getWalletForDiscordUser } from "./services/wallet.js";
-import { ActivityEconomyService, FileActivityProgressStore } from "./services/activity-economy.js";
+import { ActivityEconomyService, FileActivityProgressStore, isPurchaseId, isTreasuryItemId, isTreasuryPay } from "./services/activity-economy.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -214,6 +214,28 @@ export function createApp(options: CreateAppOptions = {}) {
       const user = getSession(req).user;
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       res.json({ ok: true, daily: await activityEconomy.claimDaily(user) });
+    })
+  );
+
+  app.get(
+    "/api/economy/treasury",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      res.json({ ok: true, treasury: await activityEconomy.treasuryStatus(user) });
+    })
+  );
+
+  app.post(
+    "/api/economy/treasury/purchases",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ purchaseId: z.string(), itemId: z.string(), pay: z.string() }).safeParse(req.body);
+      if (!parsed.success || !isPurchaseId(parsed.data.purchaseId) || !isTreasuryItemId(parsed.data.itemId) || !isTreasuryPay(parsed.data.pay)) {
+        throw new AppError(400, "bad_request", "Treasury purchase is invalid.");
+      }
+      res.json({ ok: true, treasury: await activityEconomy.purchaseTreasury(user, parsed.data.purchaseId, parsed.data.itemId, parsed.data.pay) });
     })
   );
 

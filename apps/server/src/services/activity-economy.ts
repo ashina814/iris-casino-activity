@@ -8,17 +8,25 @@ import { getWalletForDiscordUser } from "./wallet.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
-type DailyProgress = {
+type ActivityProgress = {
   lastDaily: string;
   dailyStreak: number;
   reserve: number;
   notes: number;
   noteRemainder: number;
+  seals: number;
+  purchases: Record<TreasuryItemId, number>;
+  purchaseRequests: Record<string, { itemId: TreasuryItemId; pay: TreasuryPay }>;
 };
 
 type ActivityProgressState = {
-  users: Record<string, DailyProgress>;
+  users: Record<string, ActivityProgress>;
 };
+
+type TreasuryItemId = "stardust" | "capsule" | "key" | "seal";
+type TreasuryPay = "coins" | "notes";
+
+const treasuryItemIds = ["stardust", "capsule", "key", "seal"] as const satisfies readonly TreasuryItemId[];
 
 const adjustmentResponseSchema = z.object({
   ok: z.literal(true),
@@ -72,6 +80,52 @@ export class ActivityEconomyService {
     };
   }
 
+  async treasuryStatus(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return this.publicTreasury(progress, wallet.wallet, wallet.currency);
+  }
+
+  async purchaseTreasury(user: DiscordUser, purchaseId: string, itemId: TreasuryItemId, pay: TreasuryPay) {
+    const progress = this.progressFor(user.id);
+    const existing = progress.purchaseRequests[purchaseId];
+    if (existing && (existing.itemId !== itemId || existing.pay !== pay)) {
+      throw new AppError(409, "casino_transaction_conflict", "Treasury purchase id conflicts with an existing purchase.");
+    }
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    if (existing) {
+      return { purchaseId, itemId, pay, ...this.publicTreasury(progress, wallet.wallet, wallet.currency) };
+    }
+
+    const item = treasuryCatalog(progress.seals).find((entry) => entry.id === itemId);
+    if (!item) throw new AppError(400, "bad_request", "Treasury item is invalid.");
+    let nextWallet = wallet.wallet;
+    if (pay === "notes") {
+      if (progress.notes < item.notes) throw new AppError(409, "insufficient_funds", "Insufficient Crown Notes.");
+    } else {
+      const result = await requestActivityAdjustment({
+        transactionId: `activity-treasury-${user.id}-${purchaseId}`,
+        discordUserId: user.id,
+        sessionId: `treasury-${purchaseId}`,
+        operation: "debit",
+        amount: item.coins,
+        reason: "treasury"
+      }, this.options.env, this.options.fetch);
+      nextWallet = result.wallet;
+    }
+
+    const next: ActivityProgress = {
+      ...progress,
+      notes: pay === "notes" ? progress.notes - item.notes : progress.notes,
+      seals: itemId === "seal" ? progress.seals + 1 : progress.seals,
+      purchases: { ...progress.purchases, [itemId]: progress.purchases[itemId] + 1 },
+      purchaseRequests: { ...progress.purchaseRequests, [purchaseId]: { itemId, pay } }
+    };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { purchaseId, itemId, pay, ...this.publicTreasury(next, nextWallet, wallet.currency) };
+  }
+
   async claimDaily(user: DiscordUser) {
     const progress = this.progressFor(user.id);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
@@ -96,7 +150,8 @@ export class ActivityEconomyService {
     const remainder = requested - amount;
     const nextNoteRemainder = progress.noteRemainder + remainder;
     const notesAwarded = Math.floor(nextNoteRemainder / 100);
-    const next: DailyProgress = {
+    const next: ActivityProgress = {
+      ...progress,
       lastDaily: date,
       dailyStreak: progress.dailyStreak + 1,
       reserve: progress.reserve - amount,
@@ -130,9 +185,20 @@ export class ActivityEconomyService {
     };
   }
 
-  private progressFor(discordUserId: string): DailyProgress {
+  private progressFor(discordUserId: string): ActivityProgress {
     const current = this.state.users[discordUserId];
-    return current ?? { lastDaily: "", dailyStreak: 0, reserve: 3000, notes: 0, noteRemainder: 0 };
+    return current ?? initialProgress();
+  }
+
+  private publicTreasury(progress: ActivityProgress, wallet: number, currency: string) {
+    return {
+      wallet,
+      currency,
+      reserve: progress.reserve,
+      notes: progress.notes,
+      seals: progress.seals,
+      purchases: progress.purchases
+    };
   }
 }
 
@@ -186,15 +252,66 @@ function normalizeState(value: unknown): ActivityProgressState {
   };
 }
 
-function normalizeProgress(value: unknown): DailyProgress {
-  const raw = value && typeof value === "object" ? value as Partial<DailyProgress> : {};
+function normalizeProgress(value: unknown): ActivityProgress {
+  const raw = value && typeof value === "object" ? value as Partial<ActivityProgress> : {};
   return {
     lastDaily: typeof raw.lastDaily === "string" ? raw.lastDaily : "",
     dailyStreak: safeNonNegativeInteger(raw.dailyStreak),
     reserve: safeNonNegativeInteger(raw.reserve, 3000),
     notes: safeNonNegativeInteger(raw.notes),
-    noteRemainder: safeNonNegativeInteger(raw.noteRemainder)
+    noteRemainder: safeNonNegativeInteger(raw.noteRemainder),
+    seals: safeNonNegativeInteger(raw.seals),
+    purchases: normalizePurchases(raw.purchases),
+    purchaseRequests: normalizePurchaseRequests(raw.purchaseRequests)
   };
+}
+
+function initialProgress(): ActivityProgress {
+  return {
+    lastDaily: "",
+    dailyStreak: 0,
+    reserve: 3000,
+    notes: 0,
+    noteRemainder: 0,
+    seals: 0,
+    purchases: normalizePurchases(),
+    purchaseRequests: {}
+  };
+}
+
+function normalizePurchases(value?: Partial<Record<TreasuryItemId, unknown>>): Record<TreasuryItemId, number> {
+  return Object.fromEntries(treasuryItemIds.map((id) => [id, safeNonNegativeInteger(value?.[id])])) as Record<TreasuryItemId, number>;
+}
+
+function normalizePurchaseRequests(value: unknown): ActivityProgress["purchaseRequests"] {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([id, request]) => {
+    if (!isPurchaseId(id) || !request || typeof request !== "object") return [];
+    const raw = request as { itemId?: unknown; pay?: unknown };
+    if (!isTreasuryItemId(raw.itemId) || !isTreasuryPay(raw.pay)) return [];
+    return [[id, { itemId: raw.itemId, pay: raw.pay }]];
+  }));
+}
+
+function treasuryCatalog(seals: number) {
+  return [
+    { id: "stardust" as const, coins: 8000, notes: 20 },
+    { id: "capsule" as const, coins: 15000, notes: 40 },
+    { id: "key" as const, coins: 25000, notes: 75 },
+    { id: "seal" as const, coins: Math.floor(50000 * Math.pow(1.5, Math.min(8, seals))), notes: 150 + 50 * seals }
+  ];
+}
+
+export function isTreasuryItemId(value: unknown): value is TreasuryItemId {
+  return typeof value === "string" && treasuryItemIds.includes(value as TreasuryItemId);
+}
+
+export function isTreasuryPay(value: unknown): value is TreasuryPay {
+  return value === "coins" || value === "notes";
+}
+
+export function isPurchaseId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{8,80}$/.test(value);
 }
 
 function safeNonNegativeInteger(value: unknown, fallback = 0): number {

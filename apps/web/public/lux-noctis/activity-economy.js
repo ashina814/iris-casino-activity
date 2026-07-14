@@ -17,6 +17,7 @@
   let circuitRefresh = 0;
   let odysseyRefresh = 0;
   let albumRefresh = 0;
+  let sovereignRefresh = 0;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -205,6 +206,29 @@
     for (const series of albums.claimed || []) app.ascension.data.collection.albums[series] = app.ascension.data.collection.albums[series] || Date.now();
     if (Number.isInteger(albums.wallet) && albums.wallet >= 0) window.__IRIS_SET_WALLET?.(albums.wallet);
     app.profile.save();
+  }
+
+  async function refreshSovereign() {
+    const refresh = ++sovereignRefresh;
+    let response = await fetch("/api/economy/sovereign", { credentials: "include" });
+    let payload = await response.json().catch(() => null);
+    if (refresh !== sovereignRefresh || !response.ok || !payload?.ok || !payload.sovereign || !app.sovereign) return;
+    if (!payload.sovereign.migrated) {
+      response = await fetch("/api/economy/sovereign/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ marks: app.sovereign.data.marks || 0, chests: app.sovereign.data.chests || 0 }) });
+      payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.sovereign) return;
+    }
+    applySovereign(payload.sovereign);
+  }
+
+  function applySovereign(sovereign) {
+    if (!sovereign || !app.sovereign) return;
+    app.sovereign.data.marks = sovereign.marks;
+    app.sovereign.data.chests = sovereign.chests;
+    if (Number.isInteger(sovereign.wallet) && sovereign.wallet >= 0) window.__IRIS_SET_WALLET?.(sovereign.wallet);
+    app.profile.save();
+    app.sovereign.updateAll();
+    if (app.sovereign.tab === "chest" && app.activeModal?.id === "sovereignModal") app.sovereign.render();
   }
 
   function applyVault(vault) {
@@ -418,6 +442,7 @@
     void refreshCircuit();
     void refreshOdyssey();
     void refreshAlbums();
+    void refreshSovereign();
     refreshVault();
     refreshNightEvent();
     return result;
@@ -587,6 +612,19 @@
       this.app.audio.play("chime");
       this.render();
     };
+    app.sovereign.openChest = async function () {
+      const response = await fetch("/api/economy/sovereign/chest", { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.chest) {
+        void refreshSovereign();
+        return;
+      }
+      const chest = payload.chest;
+      applySovereign(chest);
+      this.app.audio.play("bigwin");
+      this.app.bigWin(chest.amount, "SOVEREIGN CHEST", "RIS settlement recorded");
+      this.render();
+    };
   }
   if (app.eternal) {
     app.eternal.handleOdysseyRound = function () {};
@@ -642,6 +680,7 @@
   void refreshCircuit();
   void refreshOdyssey();
   void refreshAlbums();
+  void refreshSovereign();
   refreshVault();
   refreshNightEvent();
 })();

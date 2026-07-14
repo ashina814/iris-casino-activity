@@ -87,6 +87,17 @@ describe("ActivityEconomyService missions", () => {
     await expect(service.claimAlbum(user, "nocturne")).rejects.toMatchObject({ code: "casino_transaction_conflict" });
   });
 
+  it("opens a server-owned Sovereign Chest through a single RIS adjustment", async () => {
+    const store = new MemoryStore();
+    store.save({ users: { [user.id]: { sovereignMigrated: true, sovereignMarks: 150, sovereignChests: 0, sovereignRounds: {} } } });
+    const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 7000, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+    const chest = await service.openSovereignChest(user);
+    expect(chest).toMatchObject({ marks: 0, chests: 1, wallet: 7000 });
+    expect([2000, 3000, 4000, 6000, 10000]).toContain(chest.amount);
+    await expect(service.openSovereignChest(user)).rejects.toMatchObject({ code: "casino_transaction_conflict" });
+  });
+
   it("awards a server-recorded daily mission once even when its round is retried", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
       if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 5600, currency: "Ris" }), { headers: { "content-type": "application/json" } });

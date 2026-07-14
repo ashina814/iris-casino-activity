@@ -63,6 +63,10 @@ type ActivityProgress = {
   collectionMigrated: boolean;
   collectionOwned: string[];
   albumClaims: string[];
+  sovereignMigrated: boolean;
+  sovereignMarks: number;
+  sovereignChests: number;
+  sovereignRounds: Record<string, number>;
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -336,6 +340,34 @@ export class ActivityEconomyService {
     return { series, amount: 3_000, dust: 400, shards: 150, wallet: result.wallet, currency: result.currency };
   }
 
+  async sovereignStatus(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { migrated: progress.sovereignMigrated, marks: progress.sovereignMarks, chests: progress.sovereignChests, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async migrateSovereign(user: DiscordUser, marks: number, chests: number) {
+    const progress = this.progressFor(user.id);
+    if (progress.sovereignMigrated) return this.sovereignStatus(user);
+    const next = { ...progress, sovereignMigrated: true, sovereignMarks: Math.min(9_999, Math.max(0, Math.floor(marks))), sovereignChests: Math.max(0, Math.floor(chests)) };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { migrated: true, marks: next.sovereignMarks, chests: next.sovereignChests, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async openSovereignChest(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    if (!progress.sovereignMigrated || progress.sovereignMarks < 150) throw new AppError(409, "casino_transaction_conflict", "Sovereign Chest is unavailable.");
+    const chests = progress.sovereignChests + 1;
+    const amount = [2_000, 3_000, 4_000, 6_000, 10_000][randomInt(5)]!;
+    const result = await requestActivityAdjustment({ transactionId: `activity-chest-${user.id}-${chests}`, discordUserId: user.id, sessionId: `chest-${chests}`, operation: "credit", amount, reason: "chest" }, this.options.env, this.options.fetch);
+    const next = { ...progress, sovereignMarks: progress.sovereignMarks - 150, sovereignChests: chests };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { amount, marks: next.sovereignMarks, chests, wallet: result.wallet, currency: result.currency };
+  }
+
   async claimMystery(user: DiscordUser, offerId: string, index: number) {
     const progress = this.progressFor(user.id); const offer = progress.mysteryOffer;
     if (!offer || offer.id !== offerId || offer.claimed || !Number.isInteger(index) || index < 0 || index >= offer.rewards.length) throw new AppError(409, "casino_transaction_conflict", "Mystery reward is unavailable.");
@@ -492,6 +524,7 @@ export class ActivityEconomyService {
       currency = circuit.currency;
     }
     progress = this.advanceOdyssey(progress, round);
+    progress = this.advanceSovereign(progress, round);
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -721,6 +754,15 @@ export class ActivityEconomyService {
     return this.prepareOdysseyNodes({ ...progress, odysseyLives: lives, odysseySelected: null, odysseyBestFloor: bestFloor });
   }
 
+  private advanceSovereign(progress: ActivityProgress, round: TrustedMissionRound): ActivityProgress {
+    if (!progress.sovereignMigrated) return progress;
+    const game = round.game ?? round.id.split("-", 1)[0] ?? "";
+    if (!circuitGames.includes(game)) return progress;
+    const rounds = (progress.sovereignRounds[game] ?? 0) + 1;
+    const marks = Math.min(9_999, progress.sovereignMarks + (rounds % 2 === 0 ? 1 : 0) + (round.payout > round.wager ? 1 : 0));
+    return { ...progress, sovereignMarks: marks, sovereignRounds: { ...progress.sovereignRounds, [game]: rounds } };
+  }
+
   private advanceVault(progress: ActivityProgress, round: TrustedMissionRound, doubled: boolean): ActivityProgress {
     if (progress.vaultReady) return progress;
     const baseGain = Math.min(10, Math.max(1, 2 + Math.floor(round.wager / 2500) + (round.payout > round.wager ? 1 : 0)));
@@ -899,6 +941,10 @@ function normalizeProgress(value: unknown): ActivityProgress {
     collectionMigrated: raw.collectionMigrated === true,
     collectionOwned: Array.isArray(raw.collectionOwned) ? [...new Set(raw.collectionOwned.filter((id): id is string => typeof id === "string" && collectionItemIds.includes(id)))] : [],
     albumClaims: Array.isArray(raw.albumClaims) ? [...new Set(raw.albumClaims.filter((id): id is string => typeof id === "string" && collectionSeries.includes(id)))] : []
+    ,sovereignMigrated: raw.sovereignMigrated === true,
+    sovereignMarks: Math.min(9_999, safeNonNegativeInteger(raw.sovereignMarks)),
+    sovereignChests: safeNonNegativeInteger(raw.sovereignChests),
+    sovereignRounds: normalizeSovereignRounds(raw.sovereignRounds)
   };
 }
 
@@ -956,7 +1002,11 @@ function initialProgress(): ActivityProgress {
     odysseyBestScore: 0,
     collectionMigrated: false,
     collectionOwned: [],
-    albumClaims: []
+    albumClaims: [],
+    sovereignMigrated: false,
+    sovereignMarks: 0,
+    sovereignChests: 0,
+    sovereignRounds: {}
   };
 }
 
@@ -1063,6 +1113,11 @@ function normalizeOdysseyNodes(value: unknown): OdysseyNode[] {
 
 function normalizeOdysseyBoons(value: unknown): OdysseyBoon[] {
   return Array.isArray(value) ? value.filter((boon): boon is OdysseyBoon => boon === "life" || boon === "coins" || boon === "key" || boon === "shield" || boon === "fame" || boon === "score").slice(0, 24) : [];
+}
+
+function normalizeSovereignRounds(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([game, rounds]) => circuitGames.includes(game) && typeof rounds === "number" ? [[game, safeNonNegativeInteger(rounds)]] : []));
 }
 
 function shuffle<T>(items: T[]): T[] {

@@ -84,11 +84,12 @@ type ActivityProgress = {
   raidClaims: string[];
   partyClaims: string[];
   duelClaims: string[];
+  mastery: Record<string, { xp: number; level: number }>;
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
 type MissionProgress = { id: string; event: MissionEvent; target: number; reward: number; progress: number; claimed: boolean };
-type WeeklyEvent = "round" | "win" | "wager" | "variety";
+type WeeklyEvent = "round" | "win" | "wager" | "variety" | "masteryLevel" | "duelWin" | "raidDamage" | "capsule";
 type WeeklyProgress = { id: string; event: WeeklyEvent; target: number; reward: { coins: number; dust: number; tokens: number }; progress: number; claimed: boolean; games: string[] };
 type MysteryReward = { type: "coins" | "dust" | "capsule" | "tokens"; amount: number };
 type MysteryOffer = { id: string; rewards: MysteryReward[]; claimed: boolean };
@@ -97,7 +98,7 @@ type CircuitNode = { game: string; type: "play" | "win" | "return"; target: numb
 type OdysseyNode = { game: string; type: "play" | "win" | "wager"; target: number; boss: boolean };
 type OdysseyBoon = "life" | "coins" | "key" | "shield" | "fame" | "score";
 type NightEventId = "stardust" | "vault" | "echo" | "crown";
-export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>> };
+export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>>; weeklyEvents?: Partial<Record<WeeklyEvent, number>> };
 
 type ActivityProgressState = {
   users: Record<string, ActivityProgress>;
@@ -119,9 +120,14 @@ const weeklyPool: Omit<WeeklyProgress, "progress" | "claimed" | "games">[] = [
   { id: "rounds", event: "round", target: 50, reward: { coins: 2500, dust: 180, tokens: 2 } },
   { id: "wins", event: "win", target: 15, reward: { coins: 3000, dust: 220, tokens: 2 } },
   { id: "wager", event: "wager", target: 250000, reward: { coins: 3500, dust: 250, tokens: 3 } },
-  { id: "variety", event: "variety", target: 10, reward: { coins: 3000, dust: 300, tokens: 3 } }
+  { id: "variety", event: "variety", target: 10, reward: { coins: 3000, dust: 300, tokens: 3 } },
+  { id: "mastery", event: "masteryLevel", target: 5, reward: { coins: 2200, dust: 320, tokens: 3 } },
+  { id: "duel", event: "duelWin", target: 3, reward: { coins: 4500, dust: 300, tokens: 5 } },
+  { id: "raid", event: "raidDamage", target: 50000, reward: { coins: 3500, dust: 350, tokens: 4 } },
+  { id: "capsule", event: "capsule", target: 4, reward: { coins: 2200, dust: 250, tokens: 3 } }
 ];
 const circuitGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch", "threecard", "derby", "ascent", "arcana", "moonshot"];
+const masteryGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo"];
 const odysseyGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch"];
 const odysseyBoons: OdysseyBoon[] = ["life", "coins", "key", "shield", "fame", "score"];
 const collectionSeries = ["nocturne", "aurora", "crimson", "celestial", "obsidian", "eclipse", "lunar", "infernal", "verdant", "royal", "void", "solar"];
@@ -379,7 +385,7 @@ export class ActivityEconomyService {
     const itemId = (unseen.length ? unseen : candidates)[randomInt((unseen.length ? unseen : candidates).length)]!;
     const duplicate = progress.collectionOwned.includes(itemId);
     const shards = duplicate ? collectionDuplicateShards[rarity] : 0;
-    const next = {
+    let next = {
       ...progress,
       collectionCapsules: progress.collectionCapsules > 0 ? progress.collectionCapsules - 1 : 0,
       collectionDust: progress.collectionCapsules > 0 ? progress.collectionDust : progress.collectionDust - 300,
@@ -388,6 +394,7 @@ export class ActivityEconomyService {
       collectionDuplicates: progress.collectionDuplicates + (duplicate ? 1 : 0),
       collectionOwned: duplicate ? progress.collectionOwned : [...progress.collectionOwned, itemId]
     };
+    next = this.advanceWeeklyEvent(user.id, next, "capsule", 1);
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     return { collection: this.publicCollection(next), item: collectionItem(itemId), duplicate, shards };
@@ -644,6 +651,7 @@ export class ActivityEconomyService {
     let progress = this.ensureSeason(user.id, this.progressFor(user.id));
     const gain = result === "win" ? 180 : 80;
     progress = { ...progress, seasonXp: Math.min(9_999, progress.seasonXp + gain) };
+    if (result === "win") progress = this.advanceWeeklyEvent(user.id, progress, "duelWin", 1);
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
     return { id: progress.seasonId, xp: progress.seasonXp, tier: seasonTier(progress.seasonXp), claimed: progress.seasonClaimed };
@@ -684,7 +692,9 @@ export class ActivityEconomyService {
       currency = result.currency;
     }
     progress = this.advanceVault(nightEvent.progress, round, nightEvent.active === "vault");
-    progress = this.advanceWeekly(user.id, progress, round);
+    const mastery = this.advanceMastery(progress, round);
+    progress = mastery.progress;
+    progress = this.advanceWeekly(user.id, progress, { ...round, weeklyEvents: { ...round.weeklyEvents, masteryLevel: mastery.levels } });
     progress = this.advanceMystery(progress);
     progress = this.advanceSeason(user.id, progress, round);
     const circuit = await this.advanceCircuit(user, progress, round);
@@ -826,8 +836,8 @@ export class ActivityEconomyService {
 
   private ensureWeekly(discordUserId: string, progress: ActivityProgress): ActivityProgress {
     const week = jstWeekKey();
-    if (progress.weeklyId === week && progress.weekly.length === weeklyPool.length) return progress;
-    const next = { ...progress, weeklyId: week, weekly: weeklyPool.map((item) => ({ ...item, progress: 0, claimed: false, games: [] })), weeklyRounds: [] };
+    if (progress.weeklyId === week && progress.weekly.length === 4) return progress;
+    const next = { ...progress, weeklyId: week, weekly: weeklyContracts(week).map((item) => ({ ...item, progress: 0, claimed: false, games: [] })), weeklyRounds: [] };
     this.state.users[discordUserId] = next;
     this.options.store.save(this.state);
     return next;
@@ -850,13 +860,21 @@ export class ActivityEconomyService {
     const weekly = progress.weekly.map((item) => {
       if (item.claimed) return item;
       const games = item.event === "variety" && game && !item.games.includes(game) ? [...item.games, game] : item.games;
-      const progressValue = item.event === "round" ? item.progress + 1 : item.event === "win" ? item.progress + (win ? 1 : 0) : item.event === "wager" ? item.progress + round.wager : games.length;
+      const extra = round.weeklyEvents?.[item.event];
+      const progressValue = extra !== undefined ? item.progress + extra : item.event === "round" ? item.progress + 1 : item.event === "win" ? item.progress + (win ? 1 : 0) : item.event === "wager" ? item.progress + round.wager : item.event === "variety" ? games.length : item.progress;
       return { ...item, games, progress: Math.min(item.target, progressValue) };
     });
     const next = { ...progress, weekly, weeklyRounds: [...progress.weeklyRounds, round.id].slice(-1000) };
     this.state.users[discordUserId] = next;
     this.options.store.save(this.state);
     return next;
+  }
+
+  private advanceWeeklyEvent(discordUserId: string, progress: ActivityProgress, event: WeeklyEvent, amount: number): ActivityProgress {
+    progress = this.ensureWeekly(discordUserId, progress);
+    if (amount <= 0) return progress;
+    const weekly = progress.weekly.map((item) => item.event === event && !item.claimed ? { ...item, progress: Math.min(item.target, item.progress + amount) } : item);
+    return { ...progress, weekly };
   }
 
   private advanceMystery(progress: ActivityProgress): ActivityProgress {
@@ -987,6 +1005,25 @@ export class ActivityEconomyService {
     let next = { ...progress, artifactFragments: fragments % 30, artifactKeys: progress.artifactKeys + Math.floor(fragments / 30) };
     if (randomInt(10_000) < 350) next = this.grantArtifact(next).progress;
     return next;
+  }
+
+  private advanceMastery(progress: ActivityProgress, round: TrustedMissionRound) {
+    const game = round.game ?? round.id.split("-", 1)[0] ?? "";
+    if (!masteryGames.includes(game)) return { progress, levels: 0 };
+    const current = progress.mastery[game] ?? { xp: 0, level: 1 };
+    let xp = current.xp + 24 + Math.floor(round.wager / 450) + (round.payout > round.wager ? 34 : 0);
+    let level = current.level;
+    let levels = 0;
+    let dust = 0;
+    let capsules = 0;
+    while (level < 50 && xp >= 120 + level * 75) {
+      xp -= 120 + level * 75;
+      level += 1;
+      levels += 1;
+      dust += 35 + level * 5;
+      if (level % 3 === 0) capsules += 1;
+    }
+    return { progress: { ...progress, mastery: { ...progress.mastery, [game]: { xp, level } }, collectionDust: progress.collectionDust + dust, collectionCapsules: progress.collectionCapsules + capsules }, levels };
   }
 
   private grantArtifact(progress: ActivityProgress, forcedRarity?: ArtifactRarity) {
@@ -1227,7 +1264,8 @@ function normalizeProgress(value: unknown): ActivityProgress {
     artifactShards: safeNonNegativeInteger(raw.artifactShards),
     raidClaims: Array.isArray(raw.raidClaims) ? [...new Set(raw.raidClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : [],
     partyClaims: Array.isArray(raw.partyClaims) ? [...new Set(raw.partyClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : [],
-    duelClaims: Array.isArray(raw.duelClaims) ? [...new Set(raw.duelClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : []
+    duelClaims: Array.isArray(raw.duelClaims) ? [...new Set(raw.duelClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : [],
+    mastery: normalizeMastery(raw.mastery)
   };
 }
 
@@ -1306,7 +1344,8 @@ function initialProgress(): ActivityProgress {
     artifactShards: 0,
     raidClaims: [],
     partyClaims: [],
-    duelClaims: []
+    duelClaims: [],
+    mastery: {}
   };
 }
 
@@ -1318,6 +1357,17 @@ function dailyMissions(date: string): MissionProgress[] {
     seed = (seed * 1664525 + 1013904223) >>> 0;
     const mission = pool.splice(seed % pool.length, 1)[0]!;
     selected.push({ ...mission, progress: 0, claimed: false });
+  }
+  return selected;
+}
+
+function weeklyContracts(week: string): Omit<WeeklyProgress, "progress" | "claimed" | "games">[] {
+  let seed = [...week].reduce((value, character) => ((value * 33) ^ character.charCodeAt(0)) >>> 0, 5381);
+  const pool = [...weeklyPool];
+  const selected: Omit<WeeklyProgress, "progress" | "claimed" | "games">[] = [];
+  while (selected.length < 4 && pool.length) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    selected.push(pool.splice(seed % pool.length, 1)[0]!);
   }
   return selected;
 }
@@ -1375,6 +1425,15 @@ function normalizeWeekly(value: unknown): WeeklyProgress[] {
     const source = weeklyPool.find((candidate) => candidate.id === entry.id)!;
     return [{ ...source, progress: Math.min(source.target, safeNonNegativeInteger(entry.progress)), claimed: entry.claimed === true, games: Array.isArray(entry.games) ? entry.games.filter((game): game is string => typeof game === "string").slice(0, 32) : [] }];
   });
+}
+
+function normalizeMastery(value: unknown): ActivityProgress["mastery"] {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([game, entry]) => {
+    if (!masteryGames.includes(game) || !entry || typeof entry !== "object") return [];
+    const raw = entry as { xp?: unknown; level?: unknown };
+    return [[game, { xp: safeNonNegativeInteger(raw.xp), level: Math.min(50, Math.max(1, safeNonNegativeInteger(raw.level, 1))) }]];
+  }));
 }
 
 function normalizeMysteryOffer(value: unknown): MysteryOffer | null {

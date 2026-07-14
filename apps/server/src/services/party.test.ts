@@ -56,7 +56,7 @@ describe("PartyService", () => {
     const store = new MemoryPartyStore();
     const party = new PartyService({ store });
     party.join(user, "night-league", appearance);
-    party.recordTrustedRound(user.id, 900, 1_800);
+    expect(party.recordTrustedRound(user.id, 900, 1_800)).toBe(404);
 
     expect(party.submitLeague(user.id, "night-league")).toMatchObject({
       league: [{ id: user.id, name: "Yuki", glyph: "R", score: 35, rounds: 1, wins: 1, bestReturn: 1_800 }]

@@ -11,10 +11,31 @@ class MemoryStore implements ActivityProgressStore {
 const user = { id: "234567890123456789", username: "Yuki", displayName: "Yuki", avatarUrl: null };
 const env = loadEnv({ NODE_ENV: "test", IRIS_ECONOMY_API_BASE_URL: "http://economy.local", IRIS_ECONOMY_API_KEY: "test-key" });
 
+type WeeklyFixtureEvent = "round" | "win" | "wager" | "variety" | "masteryLevel" | "duelWin" | "raidDamage" | "capsule";
+type WeeklyFixture = { id: string; event: WeeklyFixtureEvent; target: number; reward: { coins: number; dust: number; tokens: number }; progress: number; claimed: boolean; games: string[] };
+type FetchMock = (url: string | URL, init?: RequestInit) => Promise<Response>;
+
+function weeklyFixture(id: string, event: WeeklyFixtureEvent, target: number, reward: WeeklyFixture["reward"]): WeeklyFixture {
+  return { id, event, target, reward, progress: 0, claimed: false, games: [] };
+}
+
+async function serviceWithWeeklyContracts(fetchMock: FetchMock, items: WeeklyFixture[]) {
+  const store = new MemoryStore();
+  const bootstrap = new ActivityEconomyService({ env, fetch: fetchMock as typeof fetch, store });
+  const { week } = await bootstrap.weeklyStatus(user);
+  store.save({ users: { [user.id]: { weeklyId: week, weekly: items } } });
+  return new ActivityEconomyService({ env, fetch: fetchMock as typeof fetch, store });
+}
+
 describe("ActivityEconomyService missions", () => {
   it("tracks and pays a weekly contract from trusted rounds exactly once", async () => {
     const fetchMock = vi.fn(async (url: string | URL) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 7500, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
-    const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    const service = await serviceWithWeeklyContracts(fetchMock, [
+      weeklyFixture("rounds", "round", 50, { coins: 2500, dust: 180, tokens: 2 }),
+      weeklyFixture("wins", "win", 15, { coins: 3000, dust: 220, tokens: 2 }),
+      weeklyFixture("wager", "wager", 250000, { coins: 3500, dust: 250, tokens: 3 }),
+      weeklyFixture("variety", "variety", 10, { coins: 3000, dust: 300, tokens: 3 })
+    ]);
     for (let index = 0; index < 50; index += 1) await service.recordMissionRound(user, { id: `weekly-round-${index}`, wager: 100, payout: 0 });
 
     const weekly = await service.weeklyStatus(user);
@@ -25,11 +46,58 @@ describe("ActivityEconomyService missions", () => {
 
   it("tracks distinct games for the weekly variety contract", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
-    const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    const service = await serviceWithWeeklyContracts(fetchMock, [
+      weeklyFixture("rounds", "round", 50, { coins: 2500, dust: 180, tokens: 2 }),
+      weeklyFixture("wins", "win", 15, { coins: 3000, dust: 220, tokens: 2 }),
+      weeklyFixture("wager", "wager", 250000, { coins: 3500, dust: 250, tokens: 3 }),
+      weeklyFixture("variety", "variety", 10, { coins: 3000, dust: 300, tokens: 3 })
+    ]);
     for (const game of ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "dragon", "wheel", "craps"]) {
       await service.recordMissionRound(user, { id: `${game}-round`, wager: 100, payout: 0 });
     }
     expect((await service.weeklyStatus(user)).items.find((item) => item.id === "variety")).toMatchObject({ progress: 10, target: 10 });
+  });
+
+  it("selects four weekly contracts from the complete Lux pool", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    const weekly = await service.weeklyStatus(user);
+
+    expect(weekly.items).toHaveLength(4);
+    expect(weekly.items.map((item) => item.id)).toEqual(expect.arrayContaining([expect.any(String)]));
+    expect(weekly.items.every((item) => ["rounds", "wins", "wager", "variety", "mastery", "duel", "raid", "capsule"].includes(item.id))).toBe(true);
+  });
+
+  it("records mastery levels and their weekly progress on the server", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = await serviceWithWeeklyContracts(fetchMock, [
+      weeklyFixture("mastery", "masteryLevel", 5, { coins: 2200, dust: 320, tokens: 3 }),
+      weeklyFixture("rounds", "round", 50, { coins: 2500, dust: 180, tokens: 2 }),
+      weeklyFixture("wins", "win", 15, { coins: 3000, dust: 220, tokens: 2 }),
+      weeklyFixture("capsule", "capsule", 4, { coins: 2200, dust: 250, tokens: 3 })
+    ]);
+    for (let index = 0; index < 8; index += 1) await service.recordMissionRound(user, { id: `mastery-${index}`, game: "blackjack", wager: 100_000, payout: 0 });
+
+    const weekly = await service.weeklyStatus(user);
+    expect(weekly.items.find((item) => item.id === "mastery")).toMatchObject({ progress: 5, target: 5 });
+    expect(weekly.collection).toMatchObject({ dust: 275, capsules: 2 });
+  });
+
+  it("records server-owned collection capsule openings for weekly contracts", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const store = new MemoryStore();
+    const bootstrap = new ActivityEconomyService({ env, fetch: fetchMock, store });
+    const { week } = await bootstrap.weeklyStatus(user);
+    store.save({ users: { [user.id]: { weeklyId: week, weekly: [
+      weeklyFixture("capsule", "capsule", 4, { coins: 2200, dust: 250, tokens: 3 }),
+      weeklyFixture("rounds", "round", 50, { coins: 2500, dust: 180, tokens: 2 }),
+      weeklyFixture("wins", "win", 15, { coins: 3000, dust: 220, tokens: 2 }),
+      weeklyFixture("wager", "wager", 250000, { coins: 3500, dust: 250, tokens: 3 })
+    ], collectionMigrated: true, collectionCapsules: 1 } } });
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+
+    await service.openCollectionCapsule(user);
+    expect((await service.weeklyStatus(user)).items.find((item) => item.id === "capsule")).toMatchObject({ progress: 1, target: 4 });
   });
 
   it("claims a server-owned mystery coin reward exactly once", async () => {

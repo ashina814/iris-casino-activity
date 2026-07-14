@@ -173,7 +173,8 @@ export class PartyService {
   }
 
   recordTrustedRound(userId: string, wager: number, payout: number) {
-    if (!Number.isSafeInteger(wager) || !Number.isSafeInteger(payout) || wager < 0 || payout < 0) return;
+    if (!Number.isSafeInteger(wager) || !Number.isSafeInteger(payout) || wager < 0 || payout < 0) return 0;
+    let raidDamage = 0;
     for (const room of this.rooms.values()) {
       this.prune(room);
       const player = room.players.get(userId);
@@ -202,6 +203,7 @@ export class PartyService {
       const raid = this.ensureRaid(room);
       if (raid.hp > 0) {
         const damage = clamp(Math.max(20, Math.floor(wager * .32 + net * .12 + 8)), 1, 8_000);
+        raidDamage += damage;
         raid.hp = Math.max(0, raid.hp - damage);
         raid.phase = raid.hp <= raid.maxHp * .25 ? 3 : raid.hp <= raid.maxHp * .6 ? 2 : 1;
         const contributor = raid.contributors.get(userId) ?? { id: userId, name: player.name, glyph: player.glyph, damage: 0 };
@@ -212,6 +214,7 @@ export class PartyService {
       this.save();
       this.broadcast(room, { type: "league", league: this.league(room) });
     }
+    return raidDamage;
   }
 
   raidState(userId: string, roomId: string): PublicPartyRaid | null { const room = this.rooms.get(roomId); if (!room || !room.players.has(userId)) return null; return this.raid(this.ensureRaid(room)); }

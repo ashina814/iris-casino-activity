@@ -851,9 +851,9 @@ async function recordMissionIfSettled(activityEconomy: ActivityEconomyService, p
 }
 
 async function recordActivityRound(activityEconomy: ActivityEconomyService, party: PartyService, user: DiscordUser, round: Parameters<ActivityEconomyService["recordMissionRound"]>[1]) {
-  await activityEconomy.recordMissionRound(user, round);
   if (round.payout > round.wager) party.recordTrustedWin(user.id, round.payout - round.wager);
-  party.recordTrustedRound(user.id, round.wager, round.payout);
+  const raidDamage = party.recordTrustedRound(user.id, round.wager, round.payout);
+  await activityEconomy.recordMissionRound(user, { ...round, weeklyEvents: { ...round.weeklyEvents, raidDamage } });
 }
 
 function activityHelmetOptions(env: ServerEnv) {

@@ -30,10 +30,15 @@ type ActivityProgress = {
   seals: number;
   purchases: Record<TreasuryItemId, number>;
   purchaseRequests: Record<string, { itemId: TreasuryItemId; pay: TreasuryPay }>;
+  weeklyId: string;
+  weekly: WeeklyProgress[];
+  weeklyRounds: string[];
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
 type MissionProgress = { id: string; event: MissionEvent; target: number; reward: number; progress: number; claimed: boolean };
+type WeeklyEvent = "round" | "win" | "wager" | "variety";
+type WeeklyProgress = { id: string; event: WeeklyEvent; target: number; reward: number; progress: number; claimed: boolean; games: string[] };
 type NightEventId = "stardust" | "vault" | "echo" | "crown";
 export type TrustedMissionRound = { id: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>> };
 
@@ -53,6 +58,12 @@ const missionPool: Omit<MissionProgress, "progress" | "claimed">[] = [
 ];
 const nightEventRounds: Record<NightEventId, number> = { stardust: 4, vault: 4, echo: 3, crown: 4 };
 const nightEventIds = Object.keys(nightEventRounds) as NightEventId[];
+const weeklyPool: Omit<WeeklyProgress, "progress" | "claimed" | "games">[] = [
+  { id: "rounds", event: "round", target: 50, reward: 2500 },
+  { id: "wins", event: "win", target: 15, reward: 3000 },
+  { id: "wager", event: "wager", target: 250000, reward: 3500 },
+  { id: "variety", event: "variety", target: 10, reward: 3000 }
+];
 
 const adjustmentResponseSchema = z.object({
   ok: z.literal(true),
@@ -138,6 +149,24 @@ export class ActivityEconomyService {
     const progress = this.ensureMissionDay(user.id, this.progressFor(user.id));
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
     return { date: progress.missionDate, items: progress.missions, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async weeklyStatus(user: DiscordUser) {
+    const progress = this.ensureWeekly(user.id, this.progressFor(user.id));
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { week: progress.weeklyId, items: progress.weekly, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async claimWeekly(user: DiscordUser, id: string) {
+    const progress = this.ensureWeekly(user.id, this.progressFor(user.id));
+    const item = progress.weekly.find((entry) => entry.id === id);
+    if (!item || item.progress < item.target) throw new AppError(409, "casino_transaction_conflict", "Weekly contract is incomplete.");
+    if (item.claimed) return { id, amount: 0, wallet: (await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch)).wallet, currency: "Ris", alreadyClaimed: true };
+    const result = await requestActivityAdjustment({ transactionId: `activity-weekly-${user.id}-${progress.weeklyId}-${id}`, discordUserId: user.id, sessionId: `weekly-${progress.weeklyId}-${id}`, operation: "credit", amount: item.reward, reason: "weekly" }, this.options.env, this.options.fetch);
+    item.claimed = true;
+    this.state.users[user.id] = progress;
+    this.options.store.save(this.state);
+    return { id, amount: item.reward, wallet: result.wallet, currency: result.currency, alreadyClaimed: false };
   }
 
   async vaultStatus(user: DiscordUser) {
@@ -255,6 +284,7 @@ export class ActivityEconomyService {
       currency = result.currency;
     }
     progress = this.advanceVault(nightEvent.progress, round, nightEvent.active === "vault");
+    progress = this.advanceWeekly(user.id, progress, round);
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -374,6 +404,31 @@ export class ActivityEconomyService {
     const date = jstDateKey();
     if (progress.missionDate === date && progress.missions.length === 3) return progress;
     const next = { ...progress, missionDate: date, missions: dailyMissions(date), missionRounds: [] };
+    this.state.users[discordUserId] = next;
+    this.options.store.save(this.state);
+    return next;
+  }
+
+  private ensureWeekly(discordUserId: string, progress: ActivityProgress): ActivityProgress {
+    const week = jstWeekKey();
+    if (progress.weeklyId === week && progress.weekly.length === weeklyPool.length) return progress;
+    const next = { ...progress, weeklyId: week, weekly: weeklyPool.map((item) => ({ ...item, progress: 0, claimed: false, games: [] })), weeklyRounds: [] };
+    this.state.users[discordUserId] = next;
+    this.options.store.save(this.state);
+    return next;
+  }
+
+  private advanceWeekly(discordUserId: string, progress: ActivityProgress, round: TrustedMissionRound): ActivityProgress {
+    progress = this.ensureWeekly(discordUserId, progress);
+    if (progress.weeklyRounds.includes(round.id)) return progress;
+    const win = round.payout > round.wager;
+    const weekly = progress.weekly.map((item) => {
+      if (item.claimed) return item;
+      const games = item.event === "variety" ? item.games : item.games;
+      const progressValue = item.event === "round" ? item.progress + 1 : item.event === "win" ? item.progress + (win ? 1 : 0) : item.event === "wager" ? item.progress + round.wager : games.length;
+      return { ...item, progress: Math.min(item.target, progressValue) };
+    });
+    const next = { ...progress, weekly, weeklyRounds: [...progress.weeklyRounds, round.id].slice(-1000) };
     this.state.users[discordUserId] = next;
     this.options.store.save(this.state);
     return next;
@@ -516,6 +571,7 @@ function normalizeProgress(value: unknown): ActivityProgress {
     seals: safeNonNegativeInteger(raw.seals),
     purchases: normalizePurchases(raw.purchases),
     purchaseRequests: normalizePurchaseRequests(raw.purchaseRequests)
+    ,weeklyId: typeof raw.weeklyId === "string" ? raw.weeklyId : "", weekly: normalizeWeekly(raw.weekly), weeklyRounds: Array.isArray(raw.weeklyRounds) ? raw.weeklyRounds.filter((id): id is string => typeof id === "string").slice(-1000) : []
   };
 }
 
@@ -541,6 +597,7 @@ function initialProgress(): ActivityProgress {
     seals: 0,
     purchases: normalizePurchases(),
     purchaseRequests: {}
+    ,weeklyId: "", weekly: [], weeklyRounds: []
   };
 }
 
@@ -599,6 +656,19 @@ function normalizePurchaseRequests(value: unknown): ActivityProgress["purchaseRe
     return [[id, { itemId: raw.itemId, pay: raw.pay }]];
   }));
 }
+
+function normalizeWeekly(value: unknown): WeeklyProgress[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const entry = item as Partial<WeeklyProgress>;
+    if (!weeklyPool.some((candidate) => candidate.id === entry.id && candidate.event === entry.event)) return [];
+    const source = weeklyPool.find((candidate) => candidate.id === entry.id)!;
+    return [{ ...source, progress: Math.min(source.target, safeNonNegativeInteger(entry.progress)), claimed: entry.claimed === true, games: Array.isArray(entry.games) ? entry.games.filter((game): game is string => typeof game === "string").slice(0, 32) : [] }];
+  });
+}
+
+function jstWeekKey(date = new Date()) { const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000); jst.setUTCDate(jst.getUTCDate() - ((jst.getUTCDay() + 6) % 7)); return `${jst.getUTCFullYear()}-${String(jst.getUTCMonth() + 1).padStart(2, "0")}-${String(jst.getUTCDate()).padStart(2, "0")}`; }
 
 function treasuryCatalog(seals: number) {
   return [

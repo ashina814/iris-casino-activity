@@ -114,6 +114,16 @@
     }).catch(() => {});
   }
 
+  async function refreshWeekly() {
+    const response = await fetch("/api/economy/weekly", { credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !payload.weekly || !app.ascension) return;
+    const current = new Map((app.ascension.data.weekly.items || []).map((item) => [item.id, item]));
+    app.ascension.data.weekly = { ...app.ascension.data.weekly, id: payload.weekly.week, items: payload.weekly.items.map((item) => ({ ...(current.get(item.id) || item), ...item, complete: item.progress >= item.target })) };
+    window.__IRIS_SET_WALLET?.(payload.weekly.wallet);
+    app.profile.save();
+  }
+
   function applyVault(vault) {
     if (!vault || typeof vault !== "object") return;
     const jackpot = app.profile.data.jackpot;
@@ -319,6 +329,7 @@
     }
     void this.maybeRelief();
     refreshMissions();
+    void refreshWeekly();
     refreshVault();
     refreshNightEvent();
     return result;
@@ -361,10 +372,27 @@
   request("/api/economy/daily", "GET")
     .then(applyDailyState)
     .catch(() => {});
+  if (app.ascension) app.ascension.claimWeekly = async function (id) {
+    const item = this.data.weekly.items.find((entry) => entry.id === id);
+    if (!item || item.claimed || !item.complete) return;
+    const response = await fetch(`/api/economy/weekly/${encodeURIComponent(id)}/claim`, { method: "POST", credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !payload.weekly || payload.weekly.alreadyClaimed) return;
+    item.claimed = true;
+    window.__IRIS_SET_WALLET?.(payload.weekly.wallet);
+    this.addStardust(item.reward.dust, false);
+    this.data.eventTokens += item.reward.tokens;
+    this.app.profile.save();
+    this.app.audio.play("bigwin");
+    this.app.celebration.burst(.55);
+    this.renderEventHub("contracts");
+    this.updateAll();
+  };
   requestTreasury("/api/economy/treasury", "GET")
     .then(applyTreasuryState)
     .catch(() => {});
   refreshMissions();
+  void refreshWeekly();
   refreshVault();
   refreshNightEvent();
 })();

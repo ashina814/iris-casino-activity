@@ -238,6 +238,8 @@ export function createApp(options: CreateAppOptions = {}) {
       res.json({ ok: true, missions: await activityEconomy.missionStatus(user) });
     })
   );
+  app.get("/api/economy/weekly", asyncRoute(async (req, res) => { const user = getSession(req).user; if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); res.json({ ok: true, weekly: await activityEconomy.weeklyStatus(user) }); }));
+  app.post("/api/economy/weekly/:id/claim", asyncRoute(async (req, res) => { const user = getSession(req).user; const id = z.string().min(1).max(32).safeParse(req.params.id); if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); if (!id.success) throw new AppError(400, "bad_request", "Weekly contract is invalid."); res.json({ ok: true, weekly: await activityEconomy.claimWeekly(user, id.data) }); }));
 
   app.get(
     "/api/economy/vault",

@@ -12,6 +12,17 @@ const user = { id: "234567890123456789", username: "Yuki", displayName: "Yuki", 
 const env = loadEnv({ NODE_ENV: "test", IRIS_ECONOMY_API_BASE_URL: "http://economy.local", IRIS_ECONOMY_API_KEY: "test-key" });
 
 describe("ActivityEconomyService missions", () => {
+  it("tracks and pays a weekly contract from trusted rounds exactly once", async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 7500, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    for (let index = 0; index < 50; index += 1) await service.recordMissionRound(user, { id: `weekly-round-${index}`, wager: 100, payout: 0 });
+
+    const weekly = await service.weeklyStatus(user);
+    expect(weekly.items.find((item) => item.id === "rounds")).toMatchObject({ progress: 50, target: 50, claimed: false });
+    expect(await service.claimWeekly(user, "rounds")).toMatchObject({ amount: 2500, alreadyClaimed: false, wallet: 7500 });
+    expect((await service.claimWeekly(user, "rounds")).alreadyClaimed).toBe(true);
+  });
+
   it("awards a server-recorded daily mission once even when its round is retried", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
       if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 5600, currency: "Ris" }), { headers: { "content-type": "application/json" } });

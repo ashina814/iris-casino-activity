@@ -14,6 +14,7 @@
   let mysteryOffer = null;
   let mysteryBusy = false;
   let seasonRefresh = 0;
+  let circuitRefresh = 0;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -146,6 +147,24 @@
     if (Number.isInteger(season.wallet) && season.wallet >= 0) window.__IRIS_SET_WALLET?.(season.wallet);
     app.profile.save();
     app.ascension.updateAll();
+  }
+
+  async function refreshCircuit() {
+    const refresh = ++circuitRefresh;
+    const response = await fetch("/api/economy/circuit", { credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (refresh !== circuitRefresh || !response.ok || !payload?.ok || !payload.circuit || !app.sovereign) return;
+    applyCircuit(payload.circuit);
+  }
+
+  function applyCircuit(circuit) {
+    if (!circuit || !app.sovereign) return;
+    const local = app.sovereign.data.circuit;
+    Object.assign(local, { day: circuit.day, active: circuit.active, stage: circuit.stage, lives: circuit.lives, score: circuit.score, route: circuit.route, clears: circuit.clears, best: circuit.best, claimedDay: circuit.claimedDay });
+    if (Number.isInteger(circuit.wallet) && circuit.wallet >= 0) window.__IRIS_SET_WALLET?.(circuit.wallet);
+    app.profile.save();
+    app.sovereign.updateAll();
+    if (!document.querySelector("#sovereignModal")?.hidden) app.sovereign.render();
   }
 
   function applyVault(vault) {
@@ -356,6 +375,7 @@
     void refreshWeekly();
     void refreshMystery(true);
     void refreshSeason();
+    void refreshCircuit();
     refreshVault();
     refreshNightEvent();
     return result;
@@ -489,6 +509,25 @@
       }
     };
   }
+  if (app.sovereign) {
+    const localCircuitRound = app.sovereign.onRound;
+    app.sovereign.onRound = function (payload) {
+      const active = this.data.circuit.active;
+      this.data.circuit.active = false;
+      const result = localCircuitRound.call(this, payload);
+      this.data.circuit.active = active;
+      void refreshCircuit();
+      return result;
+    };
+    app.sovereign.startCircuit = async function () {
+      const response = await fetch("/api/economy/circuit/start", { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.circuit) return;
+      applyCircuit(payload.circuit);
+      this.app.audio.play("chime");
+      this.render();
+    };
+  }
   requestTreasury("/api/economy/treasury", "GET")
     .then(applyTreasuryState)
     .catch(() => {});
@@ -496,6 +535,7 @@
   void refreshWeekly();
   void refreshMystery();
   void refreshSeason();
+  void refreshCircuit();
   refreshVault();
   refreshNightEvent();
 })();

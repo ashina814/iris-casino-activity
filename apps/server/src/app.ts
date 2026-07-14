@@ -251,6 +251,8 @@ export function createApp(options: CreateAppOptions = {}) {
   }));
   app.get("/api/economy/season", asyncRoute(async (req, res) => { const user = getSession(req).user; if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); res.json({ ok: true, season: await activityEconomy.seasonStatus(user) }); }));
   app.post("/api/economy/season/:tier/claim", asyncRoute(async (req, res) => { const user = getSession(req).user; const tier = z.coerce.number().int().min(1).max(40).safeParse(req.params.tier); if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); if (!tier.success) throw new AppError(400, "bad_request", "Season reward is invalid."); res.json({ ok: true, season: await activityEconomy.claimSeason(user, tier.data) }); }));
+  app.get("/api/economy/circuit", asyncRoute(async (req, res) => { const user = getSession(req).user; if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); res.json({ ok: true, circuit: await activityEconomy.circuitStatus(user) }); }));
+  app.post("/api/economy/circuit/start", asyncRoute(async (req, res) => { const user = getSession(req).user; if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); res.json({ ok: true, circuit: await activityEconomy.startCircuit(user) }); }));
 
   app.get(
     "/api/economy/vault",

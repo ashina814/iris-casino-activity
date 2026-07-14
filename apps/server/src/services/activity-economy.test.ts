@@ -54,6 +54,19 @@ describe("ActivityEconomyService missions", () => {
     expect(await service.claimSeason(user, 1)).toMatchObject({ alreadyClaimed: true });
   });
 
+  it("runs a server-owned Crown Circuit and settles its daily reward", async () => {
+    const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 13000, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    const started = await service.startCircuit(user);
+    for (const [index, node] of started.route.entries()) {
+      const payout = node.type === "play" ? 0 : node.type === "win" ? 200 : 200;
+      await service.recordMissionRound(user, { id: `circuit-${index}-${node.game}`, game: node.game, wager: 100, payout });
+    }
+    expect(await service.circuitStatus(user)).toMatchObject({ active: false, stage: 7, clears: 1, claimedDay: expect.any(String) });
+    const adjustment = fetchMock.mock.calls.find(([, init]) => String(init?.body).includes('"reason":"circuit"'));
+    expect(JSON.parse(String(adjustment?.[1]?.body))).toMatchObject({ amount: 8000, reason: "circuit" });
+  });
+
   it("awards a server-recorded daily mission once even when its round is retried", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
       if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 5600, currency: "Ris" }), { headers: { "content-type": "application/json" } });

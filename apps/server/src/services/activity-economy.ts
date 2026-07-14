@@ -37,6 +37,15 @@ type ActivityProgress = {
   seasonId: string;
   seasonXp: number;
   seasonClaimed: number[];
+  circuitDay: string;
+  circuitActive: boolean;
+  circuitStage: number;
+  circuitLives: number;
+  circuitScore: number;
+  circuitRoute: CircuitNode[];
+  circuitClears: number;
+  circuitBest: number;
+  circuitClaimedDay: string;
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -46,6 +55,7 @@ type WeeklyProgress = { id: string; event: WeeklyEvent; target: number; reward: 
 type MysteryReward = { type: "coins" | "dust" | "capsule" | "tokens"; amount: number };
 type MysteryOffer = { id: string; rewards: MysteryReward[]; claimed: boolean };
 type SeasonReward = { type: "coins" | "dust" | "tokens" | "shards" | "capsule"; amount: number };
+type CircuitNode = { game: string; type: "play" | "win" | "return"; target: number };
 type NightEventId = "stardust" | "vault" | "echo" | "crown";
 export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>> };
 
@@ -71,6 +81,7 @@ const weeklyPool: Omit<WeeklyProgress, "progress" | "claimed" | "games">[] = [
   { id: "wager", event: "wager", target: 250000, reward: 3500 },
   { id: "variety", event: "variety", target: 10, reward: 3000 }
 ];
+const circuitGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch", "threecard", "derby", "ascent", "arcana", "moonshot"];
 
 const adjustmentResponseSchema = z.object({
   ok: z.literal(true),
@@ -188,6 +199,22 @@ export class ActivityEconomyService {
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     return { tier, reward, alreadyClaimed: false, wallet: result.wallet, currency: result.currency };
+  }
+
+  async circuitStatus(user: DiscordUser) {
+    const progress = this.ensureCircuit(user.id, this.progressFor(user.id));
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { ...this.publicCircuit(progress), wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async startCircuit(user: DiscordUser) {
+    const progress = this.ensureCircuit(user.id, this.progressFor(user.id));
+    if (progress.circuitActive) return this.circuitStatus(user);
+    const next = { ...progress, circuitActive: true, circuitStage: 0, circuitLives: 3, circuitScore: 0 };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { ...this.publicCircuit(next), wallet: wallet.wallet, currency: wallet.currency };
   }
 
   async claimMystery(user: DiscordUser, offerId: string, index: number) {
@@ -339,6 +366,12 @@ export class ActivityEconomyService {
     progress = this.advanceWeekly(user.id, progress, round);
     progress = this.advanceMystery(progress);
     progress = this.advanceSeason(user.id, progress, round);
+    const circuit = await this.advanceCircuit(user, progress, round);
+    progress = circuit.progress;
+    if (circuit.wallet !== null) {
+      wallet = circuit.wallet;
+      currency = circuit.currency;
+    }
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -511,6 +544,37 @@ export class ActivityEconomyService {
     return { ...progress, seasonXp: Math.min(9_999, progress.seasonXp + Math.max(0, gain)) };
   }
 
+  private ensureCircuit(discordUserId: string, progress: ActivityProgress): ActivityProgress {
+    const day = jstDateKey();
+    if (progress.circuitDay === day && progress.circuitRoute.length === 7) return progress;
+    const route = shuffle(circuitGames).slice(0, 7).map((game, index): CircuitNode => ({ game, type: index === 0 || index === 3 ? "play" : index === 1 || index === 4 || index === 6 ? "win" : "return", target: index >= 5 ? 1.75 : 1.35 }));
+    const next = { ...progress, circuitDay: day, circuitActive: false, circuitStage: 0, circuitLives: 3, circuitScore: 0, circuitRoute: route };
+    this.state.users[discordUserId] = next;
+    this.options.store.save(this.state);
+    return next;
+  }
+
+  private async advanceCircuit(user: DiscordUser, progress: ActivityProgress, round: TrustedMissionRound) {
+    progress = this.ensureCircuit(user.id, progress);
+    if (!progress.circuitActive) return { progress, wallet: null as number | null, currency: "Ris" };
+    const game = round.game ?? round.id.split("-", 1)[0] ?? "";
+    const node = progress.circuitRoute[progress.circuitStage];
+    if (!node || node.game !== game) return { progress, wallet: null as number | null, currency: "Ris" };
+    const success = node.type === "play" ? true : node.type === "win" ? round.payout > round.wager : round.wager > 0 && round.payout / round.wager >= node.target;
+    if (!success) {
+      const lives = Math.max(0, progress.circuitLives - 1);
+      return { progress: { ...progress, circuitLives: lives, circuitActive: lives > 0 }, wallet: null as number | null, currency: "Ris" };
+    }
+    const score = progress.circuitScore + 500 + (progress.circuitStage + 1) * 350 + Math.max(0, Math.floor((round.payout - round.wager) / 20));
+    const stage = progress.circuitStage + 1;
+    if (stage < progress.circuitRoute.length) return { progress: { ...progress, circuitStage: stage, circuitScore: score }, wallet: null as number | null, currency: "Ris" };
+    const clears = progress.circuitClears + 1;
+    const firstToday = progress.circuitClaimedDay !== progress.circuitDay;
+    const amount = firstToday ? 8_000 : 1_500;
+    const result = await requestActivityAdjustment({ transactionId: `activity-circuit-${user.id}-${progress.circuitDay}-${clears}`, discordUserId: user.id, sessionId: `circuit-${progress.circuitDay}-${clears}`, operation: "credit", amount, reason: "circuit" }, this.options.env, this.options.fetch);
+    return { progress: { ...progress, circuitActive: false, circuitStage: stage, circuitScore: score, circuitClears: clears, circuitBest: Math.max(progress.circuitBest, score), circuitClaimedDay: progress.circuitDay }, wallet: result.wallet, currency: result.currency };
+  }
+
   private advanceVault(progress: ActivityProgress, round: TrustedMissionRound, doubled: boolean): ActivityProgress {
     if (progress.vaultReady) return progress;
     const baseGain = Math.min(10, Math.max(1, 2 + Math.floor(round.wager / 2500) + (round.payout > round.wager ? 1 : 0)));
@@ -572,6 +636,10 @@ export class ActivityEconomyService {
       remaining: progress.nightEventRemaining,
       nextIn: progress.nightEventNextIn
     };
+  }
+
+  private publicCircuit(progress: ActivityProgress) {
+    return { day: progress.circuitDay, active: progress.circuitActive, stage: progress.circuitStage, lives: progress.circuitLives, score: progress.circuitScore, route: progress.circuitRoute, clears: progress.circuitClears, best: progress.circuitBest, claimedDay: progress.circuitClaimedDay };
   }
 }
 
@@ -654,7 +722,16 @@ function normalizeProgress(value: unknown): ActivityProgress {
     mysteryOffer: normalizeMysteryOffer(raw.mysteryOffer),
     seasonId: typeof raw.seasonId === "string" ? raw.seasonId : "",
     seasonXp: Math.min(9_999, safeNonNegativeInteger(raw.seasonXp)),
-    seasonClaimed: Array.isArray(raw.seasonClaimed) ? [...new Set(raw.seasonClaimed.filter((tier): tier is number => Number.isInteger(tier) && tier >= 1 && tier <= 40))] : []
+    seasonClaimed: Array.isArray(raw.seasonClaimed) ? [...new Set(raw.seasonClaimed.filter((tier): tier is number => Number.isInteger(tier) && tier >= 1 && tier <= 40))] : [],
+    circuitDay: typeof raw.circuitDay === "string" ? raw.circuitDay : "",
+    circuitActive: raw.circuitActive === true,
+    circuitStage: Math.min(7, safeNonNegativeInteger(raw.circuitStage)),
+    circuitLives: Math.min(3, safeNonNegativeInteger(raw.circuitLives, 3)),
+    circuitScore: safeNonNegativeInteger(raw.circuitScore),
+    circuitRoute: normalizeCircuitRoute(raw.circuitRoute),
+    circuitClears: safeNonNegativeInteger(raw.circuitClears),
+    circuitBest: safeNonNegativeInteger(raw.circuitBest),
+    circuitClaimedDay: typeof raw.circuitClaimedDay === "string" ? raw.circuitClaimedDay : ""
   };
 }
 
@@ -686,7 +763,16 @@ function initialProgress(): ActivityProgress {
     mysteryOffer: null,
     seasonId: "",
     seasonXp: 0,
-    seasonClaimed: []
+    seasonClaimed: [],
+    circuitDay: "",
+    circuitActive: false,
+    circuitStage: 0,
+    circuitLives: 3,
+    circuitScore: 0,
+    circuitRoute: [],
+    circuitClears: 0,
+    circuitBest: 0,
+    circuitClaimedDay: ""
   };
 }
 
@@ -769,6 +855,16 @@ function normalizeMysteryOffer(value: unknown): MysteryOffer | null {
     return [{ type: candidate.type, amount }];
   }).slice(0, 3);
   return rewards.length === 3 ? { id: offer.id, rewards, claimed: offer.claimed } : null;
+}
+
+function normalizeCircuitRoute(value: unknown): CircuitNode[] {
+  if (!Array.isArray(value) || value.length !== 7) return [];
+  return value.flatMap((node): CircuitNode[] => {
+    if (!node || typeof node !== "object") return [];
+    const entry = node as Partial<CircuitNode>;
+    if (!circuitGames.includes(entry.game ?? "") || (entry.type !== "play" && entry.type !== "win" && entry.type !== "return") || typeof entry.target !== "number") return [];
+    return [{ game: entry.game!, type: entry.type, target: entry.target }];
+  });
 }
 
 function shuffle<T>(items: T[]): T[] {

@@ -253,6 +253,8 @@
   }
 
   async function claimArtifactSet(eternal, set) {
+    const syncResponse = await fetch("/api/economy/artifacts/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ owned: Object.keys(eternal.data.artifacts.owned || {}) }) });
+    if (!syncResponse.ok) return;
     const response = await fetch(`/api/economy/artifacts/${encodeURIComponent(set)}/claim`, { method: "POST", credentials: "include" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok || !payload.artifact) {
@@ -568,6 +570,8 @@
       for (let tier = 1; tier <= this.seasonTier(); tier += 1) if (!this.data.season.claimed[tier]) await this.claimSeason(tier);
     };
     app.ascension.claimAlbum = async function (series) {
+      const syncResponse = await fetch("/api/economy/albums/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ owned: Object.keys(this.data.collection.owned || {}) }) });
+      if (!syncResponse.ok) return;
       const response = await fetch(`/api/economy/albums/${encodeURIComponent(series)}/claim`, { method: "POST", credentials: "include" });
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok || !payload.album) {

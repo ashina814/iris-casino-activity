@@ -87,6 +87,14 @@ describe("ActivityEconomyService missions", () => {
     await expect(service.claimAlbum(user, "nocturne")).rejects.toMatchObject({ code: "casino_transaction_conflict" });
   });
 
+  it("merges collection items earned after the initial migration", async () => {
+    const store = new MemoryStore();
+    store.save({ users: { [user.id]: { collectionMigrated: true, collectionOwned: ["nocturne_avatar"], albumClaims: [] } } });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+    expect((await service.migrateAlbumCollection(user, ["nocturne_frame"])).owned).toEqual(["nocturne_avatar", "nocturne_frame"]);
+  });
+
   it("opens a server-owned Sovereign Chest through a single RIS adjustment", async () => {
     const store = new MemoryStore();
     store.save({ users: { [user.id]: { sovereignMigrated: true, sovereignMarks: 150, sovereignChests: 0, sovereignRounds: {} } } });

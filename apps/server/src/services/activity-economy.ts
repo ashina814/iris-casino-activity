@@ -325,8 +325,8 @@ export class ActivityEconomyService {
 
   async migrateAlbumCollection(user: DiscordUser, owned: string[]) {
     const progress = this.progressFor(user.id);
-    if (progress.collectionMigrated) return this.albumStatus(user);
-    const next = { ...progress, collectionMigrated: true, collectionOwned: [...new Set(owned.filter((id) => collectionItemIds.includes(id)))], albumClaims: progress.albumClaims };
+    const collectionOwned = [...new Set([...progress.collectionOwned, ...owned.filter((id) => collectionItemIds.includes(id))])];
+    const next = { ...progress, collectionMigrated: true, collectionOwned, albumClaims: progress.albumClaims };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
@@ -381,8 +381,8 @@ export class ActivityEconomyService {
 
   async migrateArtifacts(user: DiscordUser, owned: string[]) {
     const progress = this.progressFor(user.id);
-    if (progress.artifactMigrated) return this.artifactStatus(user);
-    const next = { ...progress, artifactMigrated: true, artifactOwned: [...new Set(owned.filter((id) => artifactItemIds.includes(id)))] };
+    const artifactOwned = [...new Set([...progress.artifactOwned, ...owned.filter((id) => artifactItemIds.includes(id))])];
+    const next = { ...progress, artifactMigrated: true, artifactOwned };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);

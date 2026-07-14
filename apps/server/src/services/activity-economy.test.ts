@@ -23,6 +23,27 @@ describe("ActivityEconomyService missions", () => {
     expect((await service.claimWeekly(user, "rounds")).alreadyClaimed).toBe(true);
   });
 
+  it("tracks distinct games for the weekly variety contract", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    for (const game of ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "dragon", "wheel", "craps"]) {
+      await service.recordMissionRound(user, { id: `${game}-round`, wager: 100, payout: 0 });
+    }
+    expect((await service.weeklyStatus(user)).items.find((item) => item.id === "variety")).toMatchObject({ progress: 10, target: 10 });
+  });
+
+  it("claims a server-owned mystery coin reward exactly once", async () => {
+    const store = new MemoryStore();
+    store.save({ users: { [user.id]: { mysteryOffer: { id: "100-1", rewards: [{ type: "coins", amount: 700 }, { type: "dust", amount: 100 }, { type: "tokens", amount: 3 }], claimed: false } } } });
+    const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 5700, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+
+    expect(await service.claimMystery(user, "100-1", 0)).toMatchObject({ reward: { type: "coins", amount: 700 }, wallet: 5700 });
+    await expect(service.claimMystery(user, "100-1", 0)).rejects.toMatchObject({ code: "casino_transaction_conflict" });
+    const adjustment = fetchMock.mock.calls.find(([url]) => String(url).includes("adjustments"));
+    expect(JSON.parse(String(adjustment?.[1]?.body))).toMatchObject({ amount: 700, reason: "mystery" });
+  });
+
   it("awards a server-recorded daily mission once even when its round is retried", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
       if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 5600, currency: "Ris" }), { headers: { "content-type": "application/json" } });

@@ -33,14 +33,17 @@ type ActivityProgress = {
   weeklyId: string;
   weekly: WeeklyProgress[];
   weeklyRounds: string[];
+  mysteryOffer: MysteryOffer | null;
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
 type MissionProgress = { id: string; event: MissionEvent; target: number; reward: number; progress: number; claimed: boolean };
 type WeeklyEvent = "round" | "win" | "wager" | "variety";
 type WeeklyProgress = { id: string; event: WeeklyEvent; target: number; reward: number; progress: number; claimed: boolean; games: string[] };
+type MysteryReward = { type: "coins" | "dust" | "capsule" | "tokens"; amount: number };
+type MysteryOffer = { id: string; rewards: MysteryReward[]; claimed: boolean };
 type NightEventId = "stardust" | "vault" | "echo" | "crown";
-export type TrustedMissionRound = { id: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>> };
+export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>> };
 
 type ActivityProgressState = {
   users: Record<string, ActivityProgress>;
@@ -155,6 +158,22 @@ export class ActivityEconomyService {
     const progress = this.ensureWeekly(user.id, this.progressFor(user.id));
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
     return { week: progress.weeklyId, items: progress.weekly, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async mysteryStatus(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { offer: progress.mysteryOffer, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async claimMystery(user: DiscordUser, offerId: string, index: number) {
+    const progress = this.progressFor(user.id); const offer = progress.mysteryOffer;
+    if (!offer || offer.id !== offerId || offer.claimed || !Number.isInteger(index) || index < 0 || index >= offer.rewards.length) throw new AppError(409, "casino_transaction_conflict", "Mystery reward is unavailable.");
+    const reward = offer.rewards[index]!;
+    const result = reward.type === "coins" ? await requestActivityAdjustment({ transactionId: `activity-mystery-${user.id}-${offer.id}`, discordUserId: user.id, sessionId: `mystery-${offer.id}`, operation: "credit", amount: reward.amount, reason: "mystery" }, this.options.env, this.options.fetch) : await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    progress.mysteryOffer = { ...offer, claimed: true };
+    this.state.users[user.id] = progress; this.options.store.save(this.state);
+    return { reward, wallet: result.wallet, currency: result.currency };
   }
 
   async claimWeekly(user: DiscordUser, id: string) {
@@ -285,6 +304,7 @@ export class ActivityEconomyService {
     }
     progress = this.advanceVault(nightEvent.progress, round, nightEvent.active === "vault");
     progress = this.advanceWeekly(user.id, progress, round);
+    progress = this.advanceMystery(progress);
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -422,16 +442,24 @@ export class ActivityEconomyService {
     progress = this.ensureWeekly(discordUserId, progress);
     if (progress.weeklyRounds.includes(round.id)) return progress;
     const win = round.payout > round.wager;
+    const game = round.game ?? round.id.split("-", 1)[0] ?? "";
     const weekly = progress.weekly.map((item) => {
       if (item.claimed) return item;
-      const games = item.event === "variety" ? item.games : item.games;
+      const games = item.event === "variety" && game && !item.games.includes(game) ? [...item.games, game] : item.games;
       const progressValue = item.event === "round" ? item.progress + 1 : item.event === "win" ? item.progress + (win ? 1 : 0) : item.event === "wager" ? item.progress + round.wager : games.length;
-      return { ...item, progress: Math.min(item.target, progressValue) };
+      return { ...item, games, progress: Math.min(item.target, progressValue) };
     });
     const next = { ...progress, weekly, weeklyRounds: [...progress.weeklyRounds, round.id].slice(-1000) };
     this.state.users[discordUserId] = next;
     this.options.store.save(this.state);
     return next;
+  }
+
+  private advanceMystery(progress: ActivityProgress): ActivityProgress {
+    if (progress.mysteryOffer && !progress.mysteryOffer.claimed) return progress;
+    if (randomInt(10_000) >= 450) return progress;
+    const rewards: MysteryReward[] = [{ type: "coins", amount: 250 + randomInt(751) }, { type: "dust", amount: 80 + randomInt(221) }, randomInt(100) < 35 ? { type: "capsule", amount: 1 } : { type: "tokens", amount: 2 + randomInt(3) }];
+    return { ...progress, mysteryOffer: { id: `${Date.now()}-${randomInt(1_000_000)}`, rewards: shuffle(rewards), claimed: false } };
   }
 
   private advanceVault(progress: ActivityProgress, round: TrustedMissionRound, doubled: boolean): ActivityProgress {
@@ -570,8 +598,11 @@ function normalizeProgress(value: unknown): ActivityProgress {
     nightEventNextIn: safeNonNegativeInteger(raw.nightEventNextIn, 6),
     seals: safeNonNegativeInteger(raw.seals),
     purchases: normalizePurchases(raw.purchases),
-    purchaseRequests: normalizePurchaseRequests(raw.purchaseRequests)
-    ,weeklyId: typeof raw.weeklyId === "string" ? raw.weeklyId : "", weekly: normalizeWeekly(raw.weekly), weeklyRounds: Array.isArray(raw.weeklyRounds) ? raw.weeklyRounds.filter((id): id is string => typeof id === "string").slice(-1000) : []
+    purchaseRequests: normalizePurchaseRequests(raw.purchaseRequests),
+    weeklyId: typeof raw.weeklyId === "string" ? raw.weeklyId : "",
+    weekly: normalizeWeekly(raw.weekly),
+    weeklyRounds: Array.isArray(raw.weeklyRounds) ? raw.weeklyRounds.filter((id): id is string => typeof id === "string").slice(-1000) : [],
+    mysteryOffer: normalizeMysteryOffer(raw.mysteryOffer)
   };
 }
 
@@ -596,8 +627,11 @@ function initialProgress(): ActivityProgress {
     nightEventNextIn: 6,
     seals: 0,
     purchases: normalizePurchases(),
-    purchaseRequests: {}
-    ,weeklyId: "", weekly: [], weeklyRounds: []
+    purchaseRequests: {},
+    weeklyId: "",
+    weekly: [],
+    weeklyRounds: [],
+    mysteryOffer: null
   };
 }
 
@@ -666,6 +700,29 @@ function normalizeWeekly(value: unknown): WeeklyProgress[] {
     const source = weeklyPool.find((candidate) => candidate.id === entry.id)!;
     return [{ ...source, progress: Math.min(source.target, safeNonNegativeInteger(entry.progress)), claimed: entry.claimed === true, games: Array.isArray(entry.games) ? entry.games.filter((game): game is string => typeof game === "string").slice(0, 32) : [] }];
   });
+}
+
+function normalizeMysteryOffer(value: unknown): MysteryOffer | null {
+  if (!value || typeof value !== "object") return null;
+  const offer = value as Partial<MysteryOffer>;
+  if (typeof offer.id !== "string" || !Array.isArray(offer.rewards) || typeof offer.claimed !== "boolean") return null;
+  const rewards = offer.rewards.flatMap((reward): MysteryReward[] => {
+    if (!reward || typeof reward !== "object") return [];
+    const candidate = reward as Partial<MysteryReward>;
+    const amount = candidate.amount;
+    if ((candidate.type !== "coins" && candidate.type !== "dust" && candidate.type !== "capsule" && candidate.type !== "tokens") || typeof amount !== "number" || !Number.isInteger(amount) || amount <= 0) return [];
+    return [{ type: candidate.type, amount }];
+  }).slice(0, 3);
+  return rewards.length === 3 ? { id: offer.id, rewards, claimed: offer.claimed } : null;
+}
+
+function shuffle<T>(items: T[]): T[] {
+  const copy = [...items];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const target = randomInt(index + 1);
+    [copy[index], copy[target]] = [copy[target]!, copy[index]!];
+  }
+  return copy;
 }
 
 function jstWeekKey(date = new Date()) { const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000); jst.setUTCDate(jst.getUTCDate() - ((jst.getUTCDay() + 6) % 7)); return `${jst.getUTCFullYear()}-${String(jst.getUTCMonth() + 1).padStart(2, "0")}-${String(jst.getUTCDate()).padStart(2, "0")}`; }

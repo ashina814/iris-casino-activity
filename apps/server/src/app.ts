@@ -240,6 +240,15 @@ export function createApp(options: CreateAppOptions = {}) {
   );
   app.get("/api/economy/weekly", asyncRoute(async (req, res) => { const user = getSession(req).user; if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); res.json({ ok: true, weekly: await activityEconomy.weeklyStatus(user) }); }));
   app.post("/api/economy/weekly/:id/claim", asyncRoute(async (req, res) => { const user = getSession(req).user; const id = z.string().min(1).max(32).safeParse(req.params.id); if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); if (!id.success) throw new AppError(400, "bad_request", "Weekly contract is invalid."); res.json({ ok: true, weekly: await activityEconomy.claimWeekly(user, id.data) }); }));
+  app.get("/api/economy/mystery", asyncRoute(async (req, res) => { const user = getSession(req).user; if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); res.json({ ok: true, mystery: await activityEconomy.mysteryStatus(user) }); }));
+  app.post("/api/economy/mystery/:offerId/claim", asyncRoute(async (req, res) => {
+    const user = getSession(req).user;
+    const offerId = z.string().regex(/^\d{1,20}-\d{1,6}$/).safeParse(req.params.offerId);
+    const body = z.object({ index: z.number().int().min(0).max(2) }).safeParse(req.body);
+    if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+    if (!offerId.success || !body.success) throw new AppError(400, "bad_request", "Mystery reward is invalid.");
+    res.json({ ok: true, mystery: await activityEconomy.claimMystery(user, offerId.data, body.data.index) });
+  }));
 
   app.get(
     "/api/economy/vault",

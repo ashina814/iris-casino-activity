@@ -11,6 +11,8 @@
   let vaultBusy = false;
   let vaultRefresh = 0;
   let nightEventRefresh = 0;
+  let mysteryOffer = null;
+  let mysteryBusy = false;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -122,6 +124,15 @@
     app.ascension.data.weekly = { ...app.ascension.data.weekly, id: payload.weekly.week, items: payload.weekly.items.map((item) => ({ ...(current.get(item.id) || item), ...item, complete: item.progress >= item.target })) };
     window.__IRIS_SET_WALLET?.(payload.weekly.wallet);
     app.profile.save();
+  }
+
+  async function refreshMystery(openWhenAvailable = false) {
+    const response = await fetch("/api/economy/mystery", { credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !payload.mystery) return;
+    mysteryOffer = payload.mystery.offer;
+    if (Number.isInteger(payload.mystery.wallet) && payload.mystery.wallet >= 0) window.__IRIS_SET_WALLET?.(payload.mystery.wallet);
+    if (openWhenAvailable && mysteryOffer && !mysteryOffer.claimed) app.ascension?.openMystery?.();
   }
 
   function applyVault(vault) {
@@ -330,6 +341,7 @@
     void this.maybeRelief();
     refreshMissions();
     void refreshWeekly();
+    void refreshMystery(true);
     refreshVault();
     refreshNightEvent();
     return result;
@@ -388,11 +400,61 @@
     this.renderEventHub("contracts");
     this.updateAll();
   };
+  if (app.ascension) {
+    app.ascension.maybeMysteryDoor = function () {
+      if (!this.app.activeModal) void refreshMystery(true);
+    };
+    app.ascension.openMystery = function () {
+      if (this.app.activeModal || !mysteryOffer || mysteryOffer.claimed) return;
+      const icons = { coins: "R", dust: "D", capsule: "C", tokens: "T" };
+      const labels = { coins: "RIS", dust: "STAR DUST", capsule: "STAR CAPSULE", tokens: "EVENT TOKENS" };
+      this.mysteryRewards = mysteryOffer.rewards.map((reward) => ({ ...reward, icon: icons[reward.type], label: labels[reward.type] }));
+      document.querySelector("#mysteryReveal").hidden = true;
+      document.querySelectorAll(".mystery-doors button").forEach((button) => { button.disabled = false; button.className = ""; });
+      this.app.openModal("mysteryModal");
+    };
+    app.ascension.chooseMystery = async function (index) {
+      if (mysteryBusy || !mysteryOffer || !this.mysteryRewards?.[index]) return;
+      mysteryBusy = true;
+      try {
+        const response = await fetch(`/api/economy/mystery/${encodeURIComponent(mysteryOffer.id)}/claim`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ index })
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok || !payload.mystery?.reward) throw new Error("mystery unavailable");
+        const reward = payload.mystery.reward;
+        if (reward.type === "coins") window.__IRIS_SET_WALLET?.(payload.mystery.wallet);
+        if (reward.type === "dust") this.addStardust(reward.amount, false);
+        if (reward.type === "capsule") this.data.capsules += reward.amount;
+        if (reward.type === "tokens") this.data.eventTokens += reward.amount;
+        this.data.mystery.opened += 1;
+        document.querySelectorAll(".mystery-doors button").forEach((button, door) => { button.disabled = true; button.classList.add(door === index ? "opened" : "faded"); });
+        const reveal = document.querySelector("#mysteryReveal");
+        reveal.hidden = false;
+        reveal.innerHTML = `<i>${this.mysteryRewards[index].icon}</i><small>${this.mysteryRewards[index].label}</small><strong>+${Number(reward.amount).toLocaleString("ja-JP")}</strong>`;
+        this.app.audio.play("bigwin");
+        this.app.celebration.burst(.45);
+        this.app.profile.save();
+        this.updateAll();
+        this.mysteryRewards = null;
+        mysteryOffer = null;
+      } catch {
+        this.app.toast("MYSTERY DOOR", "RIS settlement could not reveal this reward.", "!");
+        void refreshMystery();
+      } finally {
+        mysteryBusy = false;
+      }
+    };
+  }
   requestTreasury("/api/economy/treasury", "GET")
     .then(applyTreasuryState)
     .catch(() => {});
   refreshMissions();
   void refreshWeekly();
+  void refreshMystery();
   refreshVault();
   refreshNightEvent();
 })();

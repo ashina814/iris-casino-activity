@@ -224,6 +224,24 @@
     app.profile.save();
   }
 
+  function snapshotCollectionResources() {
+    if (!app.ascension) return null;
+    const collection = app.ascension.data.collection;
+    return { capsules: app.ascension.data.capsules, dust: app.ascension.data.stardust, shards: app.ascension.data.crownShards, owned: { ...collection.owned }, opened: collection.opened, duplicates: collection.duplicates, albums: { ...collection.albums } };
+  }
+
+  function restoreCollectionResources(snapshot) {
+    if (!snapshot || !app.ascension) return;
+    const collection = app.ascension.data.collection;
+    app.ascension.data.capsules = snapshot.capsules;
+    app.ascension.data.stardust = snapshot.dust;
+    app.ascension.data.crownShards = snapshot.shards;
+    collection.owned = snapshot.owned;
+    collection.opened = snapshot.opened;
+    collection.duplicates = snapshot.duplicates;
+    collection.albums = snapshot.albums;
+  }
+
   async function refreshSovereign() {
     const refresh = ++sovereignRefresh;
     let response = await fetch("/api/economy/sovereign", { credentials: "include" });
@@ -582,6 +600,14 @@
     this.updateAll();
   };
   if (app.ascension) {
+    const localAscensionRound = app.ascension.onRound;
+    app.ascension.onRound = function (payload) {
+      const collectionResources = snapshotCollectionResources();
+      const result = localAscensionRound.call(this, payload);
+      restoreCollectionResources(collectionResources);
+      void refreshAlbums();
+      return result;
+    };
     app.ascension.addSeasonXp = function () {};
     app.ascension.claimSeason = async function (tier) {
       if (this.data.season.claimed[tier]) return;

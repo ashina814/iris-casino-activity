@@ -275,6 +275,17 @@
     if (app.sovereign.tab === "chest" && app.activeModal?.id === "sovereignModal") app.sovereign.render();
   }
 
+  function snapshotSovereignResources() {
+    if (!app.sovereign) return null;
+    return { marks: app.sovereign.data.marks, chests: app.sovereign.data.chests };
+  }
+
+  function restoreSovereignResources(snapshot) {
+    if (!snapshot || !app.sovereign) return;
+    app.sovereign.data.marks = snapshot.marks;
+    app.sovereign.data.chests = snapshot.chests;
+  }
+
   async function refreshArtifacts() {
     const refresh = ++artifactRefresh;
     let response = await fetch("/api/economy/artifacts", { credentials: "include" });
@@ -739,13 +750,16 @@
     const localCircuitRound = app.sovereign.onRound;
     app.sovereign.onRound = function (payload) {
       const artifactResources = snapshotArtifactResources();
+      const sovereignResources = snapshotSovereignResources();
       const active = this.data.circuit.active;
       this.data.circuit.active = false;
       const result = localCircuitRound.call(this, payload);
       this.data.circuit.active = active;
       restoreArtifactResources(artifactResources);
+      restoreSovereignResources(sovereignResources);
       void refreshCircuit();
       void refreshArtifacts();
+      void refreshSovereign();
       return result;
     };
     app.sovereign.startCircuit = async function () {

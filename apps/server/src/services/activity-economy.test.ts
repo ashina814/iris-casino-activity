@@ -160,6 +160,14 @@ describe("ActivityEconomyService missions", () => {
     expect(artifacts.owned).toEqual(["eclipse-0"]);
   });
 
+  it("settles a raid reward and its collection resources exactly once", async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 8000, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    expect(await service.claimRaid(user, "raid-test")).toMatchObject({ amount: 3000, dust: 350, capsules: 1, collection: { dust: 350, capsules: 1 }, wallet: 8000 });
+    expect(await service.claimRaid(user, "raid-test")).toMatchObject({ amount: 0, alreadyClaimed: true, collection: { dust: 350, capsules: 1 } });
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("adjustments"))).toHaveLength(1);
+  });
+
   it("awards a server-recorded daily mission once even when its round is retried", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
       if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 5600, currency: "Ris" }), { headers: { "content-type": "application/json" } });

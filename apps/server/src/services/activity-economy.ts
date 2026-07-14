@@ -81,6 +81,7 @@ type ActivityProgress = {
   artifactOpened: number;
   artifactDuplicates: number;
   artifactShards: number;
+  raidClaims: string[];
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -590,6 +591,11 @@ export class ActivityEconomyService {
   }
 
   async claimRaid(user: DiscordUser, raidId: string) {
+    const progress = this.progressFor(user.id);
+    if (progress.raidClaims.includes(raidId)) {
+      const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+      return { amount: 0, dust: 0, capsules: 0, alreadyClaimed: true, collection: this.publicCollection(progress), wallet: wallet.wallet, currency: wallet.currency };
+    }
     const result = await requestActivityAdjustment({
       transactionId: `activity-raid-${user.id}-${raidId}`,
       discordUserId: user.id,
@@ -598,7 +604,10 @@ export class ActivityEconomyService {
       amount: 3_000,
       reason: "raid"
     }, this.options.env, this.options.fetch);
-    return { amount: 3_000, wallet: result.wallet, currency: result.currency };
+    const next = { ...progress, raidClaims: [...progress.raidClaims, raidId].slice(-500), collectionDust: progress.collectionDust + 350, collectionCapsules: progress.collectionCapsules + 1 };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { amount: 3_000, dust: 350, capsules: 1, alreadyClaimed: false, collection: this.publicCollection(next), wallet: result.wallet, currency: result.currency };
   }
 
   async claimDuel(user: DiscordUser, duelId: string, amount: number) {
@@ -1191,7 +1200,8 @@ function normalizeProgress(value: unknown): ActivityProgress {
     artifactFragments: Math.min(29, safeNonNegativeInteger(raw.artifactFragments)),
     artifactOpened: safeNonNegativeInteger(raw.artifactOpened),
     artifactDuplicates: safeNonNegativeInteger(raw.artifactDuplicates),
-    artifactShards: safeNonNegativeInteger(raw.artifactShards)
+    artifactShards: safeNonNegativeInteger(raw.artifactShards),
+    raidClaims: Array.isArray(raw.raidClaims) ? [...new Set(raw.raidClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : []
   };
 }
 
@@ -1267,7 +1277,8 @@ function initialProgress(): ActivityProgress {
     artifactFragments: 0,
     artifactOpened: 0,
     artifactDuplicates: 0,
-    artifactShards: 0
+    artifactShards: 0,
+    raidClaims: []
   };
 }
 

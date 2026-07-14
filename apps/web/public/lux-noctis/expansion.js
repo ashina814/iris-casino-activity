@@ -767,7 +767,7 @@
       const raid = this.data.raid.lastState;
       if (!raid?.defeatedAt || this.data.raid.claimed[raid.id]) return;
       if (this.app.room?.online) {
-        try { const response=await fetch(`/api/raid/${raid.id}/claim`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room:this.app.room.room})}); if(!response.ok)return; const result=(await response.json()).raid; this.data.raid.claimed[raid.id]=Date.now(); this.app.profile.save(); this.app.bigWin?.(result.amount,'RAID CLEARED',`${raid.name} · RIS REWARD`); this.renderEventHub('raid'); } catch {};
+        try { const response=await fetch(`/api/raid/${raid.id}/claim`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room:this.app.room.room})}); if(!response.ok)return; const result=(await response.json()).raid; if(result.alreadyClaimed)return; this.data.raid.claimed[raid.id]=Date.now(); if(result.collection&&this.app.ascension){const c=this.app.ascension.data.collection; c.owned=Object.fromEntries((result.collection.owned||[]).map(id=>[id,Date.now()])); this.app.ascension.data.capsules=result.collection.capsules; this.app.ascension.data.stardust=result.collection.dust; this.app.ascension.data.crownShards=result.collection.shards; c.opened=result.collection.opened; c.duplicates=result.collection.duplicates;} if(Number.isInteger(result.wallet))window.__IRIS_SET_WALLET?.(result.wallet); this.app.profile.save(); this.app.bigWin?.(result.amount,'RAID CLEARED',`${raid.name} · RIS REWARD`); this.renderEventHub('raid'); } catch {};
         return;
       }
       this.data.raid.claimed[raid.id] = Date.now();

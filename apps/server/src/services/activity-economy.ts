@@ -75,6 +75,11 @@ type ActivityProgress = {
   artifactMigrated: boolean;
   artifactOwned: string[];
   artifactClaims: string[];
+  artifactKeys: number;
+  artifactFragments: number;
+  artifactOpened: number;
+  artifactDuplicates: number;
+  artifactShards: number;
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -122,6 +127,7 @@ type CollectionRarity = "common" | "rare" | "epic" | "legendary" | "mythic";
 const collectionDuplicateShards: Record<CollectionRarity, number> = { common: 8, rare: 18, epic: 45, legendary: 100, mythic: 280 };
 const artifactSets = ["eclipse", "seraph", "dragon", "oracle", "obsidian", "velvet", "cosmos", "jester"];
 const artifactItemIds = artifactSets.flatMap((set) => Array.from({ length: 6 }, (_, index) => `${set}-${index}`));
+type ArtifactRarity = "common" | "rare" | "epic" | "legendary" | "mythic";
 
 const adjustmentResponseSchema = z.object({
   ok: z.literal(true),
@@ -295,6 +301,7 @@ export class ActivityEconomyService {
     if (boon === "life") next = { ...next, odysseyLives: Math.min(5, next.odysseyLives + 1) };
     if (boon === "shield") next = { ...next, odysseyShields: next.odysseyShields + 1 };
     if (boon === "score") next = { ...next, odysseyScore: Math.floor(next.odysseyScore * 1.25 + 300) };
+    if (boon === "key" && next.artifactMigrated) next = { ...next, artifactKeys: next.artifactKeys + 1 };
     if (boon === "coins") {
       const result = await requestActivityAdjustment({ transactionId: `activity-odyssey-boon-${user.id}-${next.odysseyRunId}-${next.odysseyBoons.length}`, discordUserId: user.id, sessionId: `odyssey-${next.odysseyRunId}-boon-${next.odysseyBoons.length}`, operation: "credit", amount: 1_500, reason: "odyssey" }, this.options.env, this.options.fetch);
       wallet = result.wallet;
@@ -305,7 +312,8 @@ export class ActivityEconomyService {
       const result = await requestActivityAdjustment({ transactionId: `activity-odyssey-complete-${user.id}-${next.odysseyRunId}`, discordUserId: user.id, sessionId: `odyssey-${next.odysseyRunId}-complete`, operation: "credit", amount, reason: "odyssey" }, this.options.env, this.options.fetch);
       wallet = result.wallet;
       currency = result.currency;
-      next = { ...next, odysseyActive: false, odysseyCompleted: next.odysseyCompleted + 1, odysseyBestScore: Math.max(next.odysseyBestScore, next.odysseyScore) };
+      next = { ...next, odysseyActive: false, odysseyCompleted: next.odysseyCompleted + 1, odysseyBestScore: Math.max(next.odysseyBestScore, next.odysseyScore), artifactKeys: next.artifactMigrated ? next.artifactKeys + 3 : next.artifactKeys };
+      if (next.artifactMigrated) next = this.grantArtifact(next, "mythic").progress;
     } else {
       next = this.prepareOdysseyNodes({ ...next, odysseyFloor: next.odysseyFloor + 1, odysseySelected: null });
     }
@@ -434,18 +442,33 @@ export class ActivityEconomyService {
   async artifactStatus(user: DiscordUser) {
     const progress = this.progressFor(user.id);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    return { migrated: progress.artifactMigrated, owned: progress.artifactOwned, claimed: progress.artifactClaims, wallet: wallet.wallet, currency: wallet.currency };
+    return { ...this.publicArtifacts(progress), wallet: wallet.wallet, currency: wallet.currency };
   }
 
-  async migrateArtifacts(user: DiscordUser, owned: string[]) {
+  async migrateArtifacts(user: DiscordUser, owned: string[], resources: { keys: number; fragments: number; opened: number; duplicates: number; shards: number }) {
     const progress = this.progressFor(user.id);
     if (progress.artifactMigrated) return this.artifactStatus(user);
     const artifactOwned = [...new Set(owned.filter((id) => artifactItemIds.includes(id)))];
-    const next = { ...progress, artifactMigrated: true, artifactOwned };
+    const next = { ...progress, artifactMigrated: true, artifactOwned, artifactKeys: resources.keys, artifactFragments: resources.fragments, artifactOpened: resources.opened, artifactDuplicates: resources.duplicates, artifactShards: resources.shards };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    return { migrated: true, owned: next.artifactOwned, claimed: next.artifactClaims, wallet: wallet.wallet, currency: wallet.currency };
+    return { ...this.publicArtifacts(next), wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async openArtifactVault(user: DiscordUser) {
+    let progress = this.progressFor(user.id);
+    if (!progress.artifactMigrated || progress.artifactKeys < 1) throw new AppError(409, "casino_transaction_conflict", "Eternal Key is unavailable.");
+    progress = { ...progress, artifactKeys: progress.artifactKeys - 1, artifactOpened: progress.artifactOpened + 1 };
+    const drops = [];
+    for (let index = 0; index < 3; index += 1) {
+      const granted = this.grantArtifact(progress, index === 2 && randomInt(100) < 20 ? "legendary" : undefined);
+      progress = granted.progress;
+      if (granted.item) drops.push(granted.item);
+    }
+    this.state.users[user.id] = progress;
+    this.options.store.save(this.state);
+    return { artifacts: this.publicArtifacts(progress), drops };
   }
 
   async claimArtifactSet(user: DiscordUser, set: string) {
@@ -453,10 +476,10 @@ export class ActivityEconomyService {
     if (!progress.artifactMigrated || !artifactSets.includes(set) || progress.artifactClaims.includes(set)) throw new AppError(409, "casino_transaction_conflict", "Artifact reward is unavailable.");
     if (!Array.from({ length: 6 }, (_, index) => `${set}-${index}`).every((id) => progress.artifactOwned.includes(id))) throw new AppError(409, "casino_transaction_conflict", "Artifact set is incomplete.");
     const result = await requestActivityAdjustment({ transactionId: `activity-artifact-${user.id}-${set}`, discordUserId: user.id, sessionId: `artifact-${set}`, operation: "credit", amount: 4_000, reason: "collection" }, this.options.env, this.options.fetch);
-    const next = { ...progress, artifactClaims: [...progress.artifactClaims, set] };
+    const next = { ...progress, artifactClaims: [...progress.artifactClaims, set], artifactKeys: progress.artifactKeys + 2 };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
-    return { set, amount: 4_000, keys: 2, wallet: result.wallet, currency: result.currency };
+    return { set, amount: 4_000, keys: 2, artifacts: this.publicArtifacts(next), wallet: result.wallet, currency: result.currency };
   }
 
   async claimMystery(user: DiscordUser, offerId: string, index: number) {
@@ -617,6 +640,7 @@ export class ActivityEconomyService {
     progress = this.advanceOdyssey(progress, round);
     progress = this.advanceSovereign(progress, round);
     progress = this.advanceCollection(progress, round);
+    progress = this.advanceArtifacts(progress, round);
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -662,6 +686,7 @@ export class ActivityEconomyService {
       seals: itemId === "seal" ? progress.seals + 1 : progress.seals,
       collectionCapsules: itemId === "capsule" ? progress.collectionCapsules + 1 : progress.collectionCapsules,
       collectionDust: itemId === "stardust" ? progress.collectionDust + 250 : progress.collectionDust,
+      artifactKeys: itemId === "key" ? progress.artifactKeys + 1 : progress.artifactKeys,
       purchases: { ...progress.purchases, [itemId]: progress.purchases[itemId] + 1 },
       purchaseRequests: { ...progress.purchaseRequests, [purchaseId]: { itemId, pay } }
     };
@@ -900,6 +925,23 @@ export class ActivityEconomyService {
     };
   }
 
+  private advanceArtifacts(progress: ActivityProgress, round: TrustedMissionRound) {
+    if (!progress.artifactMigrated) return progress;
+    const fragments = progress.artifactFragments + 1 + (round.payout > round.wager ? 1 : 0);
+    let next = { ...progress, artifactFragments: fragments % 30, artifactKeys: progress.artifactKeys + Math.floor(fragments / 30) };
+    if (randomInt(10_000) < 350) next = this.grantArtifact(next).progress;
+    return next;
+  }
+
+  private grantArtifact(progress: ActivityProgress, forcedRarity?: ArtifactRarity) {
+    const rarity = forcedRarity ?? rollArtifactRarity();
+    let pool = artifactItemIds.filter((id) => artifactRarity(id) === rarity && !progress.artifactOwned.includes(id));
+    if (!pool.length) pool = artifactItemIds.filter((id) => !progress.artifactOwned.includes(id));
+    if (!pool.length) return { progress: { ...progress, artifactShards: progress.artifactShards + 250, artifactDuplicates: progress.artifactDuplicates + 1 }, item: null };
+    const itemId = pool[randomInt(pool.length)]!;
+    return { progress: { ...progress, artifactOwned: [...progress.artifactOwned, itemId] }, item: artifactItem(itemId) };
+  }
+
   private publicCollection(progress: ActivityProgress) {
     return {
       migrated: progress.collectionMigrated,
@@ -911,6 +953,10 @@ export class ActivityEconomyService {
       opened: progress.collectionOpened,
       duplicates: progress.collectionDuplicates
     };
+  }
+
+  private publicArtifacts(progress: ActivityProgress) {
+    return { migrated: progress.artifactMigrated, owned: progress.artifactOwned, claimed: progress.artifactClaims, keys: progress.artifactKeys, fragments: progress.artifactFragments, opened: progress.artifactOpened, duplicates: progress.artifactDuplicates, shards: progress.artifactShards };
   }
 
   private publicTreasury(progress: ActivityProgress, wallet: number, currency: string) {
@@ -983,6 +1029,26 @@ function collectionItem(id: string) {
   const [series, type] = id.split("_");
   const glyphs: Record<string, string> = { avatar: "A", frame: "F", chip: "C", back: "B", aura: "U", emote: "E" };
   return { id, name: id.replace(/_/g, " ").toUpperCase(), rarity: collectionRarity(id), tone: "#c89a5b", glyph: glyphs[type ?? ""] ?? "?", series, type };
+}
+
+function artifactRarity(id: string): ArtifactRarity {
+  const [set, item] = id.split("-");
+  const index = Math.min(4, Math.floor((artifactSets.indexOf(set ?? "") + Number(item ?? -1)) / 3));
+  return (["common", "rare", "epic", "legendary", "mythic"] as const)[Math.max(0, index)]!;
+}
+
+function rollArtifactRarity(): ArtifactRarity {
+  const roll = randomInt(100);
+  if (roll < 50) return "common";
+  if (roll < 78) return "rare";
+  if (roll < 92) return "epic";
+  if (roll < 98) return "legendary";
+  return "mythic";
+}
+
+function artifactItem(id: string) {
+  const [set, item] = id.split("-");
+  return { id, set, name: `${set ?? "artifact"} ${Number(item ?? 0) + 1}`.toUpperCase(), icon: "*", rarity: artifactRarity(id) };
 }
 
 async function requestActivityAdjustment(
@@ -1096,7 +1162,12 @@ function normalizeProgress(value: unknown): ActivityProgress {
     sovereignRounds: normalizeSovereignRounds(raw.sovereignRounds),
     artifactMigrated: raw.artifactMigrated === true,
     artifactOwned: Array.isArray(raw.artifactOwned) ? [...new Set(raw.artifactOwned.filter((id): id is string => typeof id === "string" && artifactItemIds.includes(id)))] : [],
-    artifactClaims: Array.isArray(raw.artifactClaims) ? [...new Set(raw.artifactClaims.filter((id): id is string => typeof id === "string" && artifactSets.includes(id)))] : []
+    artifactClaims: Array.isArray(raw.artifactClaims) ? [...new Set(raw.artifactClaims.filter((id): id is string => typeof id === "string" && artifactSets.includes(id)))] : [],
+    artifactKeys: safeNonNegativeInteger(raw.artifactKeys),
+    artifactFragments: Math.min(29, safeNonNegativeInteger(raw.artifactFragments)),
+    artifactOpened: safeNonNegativeInteger(raw.artifactOpened),
+    artifactDuplicates: safeNonNegativeInteger(raw.artifactDuplicates),
+    artifactShards: safeNonNegativeInteger(raw.artifactShards)
   };
 }
 
@@ -1166,7 +1237,12 @@ function initialProgress(): ActivityProgress {
     sovereignRounds: {},
     artifactMigrated: false,
     artifactOwned: [],
-    artifactClaims: []
+    artifactClaims: [],
+    artifactKeys: 0,
+    artifactFragments: 0,
+    artifactOpened: 0,
+    artifactDuplicates: 0,
+    artifactShards: 0
   };
 }
 

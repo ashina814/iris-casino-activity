@@ -247,7 +247,8 @@
     let payload = await response.json().catch(() => null);
     if (refresh !== artifactRefresh || !response.ok || !payload?.ok || !payload.artifacts || !app.eternal) return;
     if (!payload.artifacts.migrated) {
-      response = await fetch("/api/economy/artifacts/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ owned: Object.keys(app.eternal.data.artifacts.owned || {}) }) });
+      const artifacts = app.eternal.data.artifacts || {};
+      response = await fetch("/api/economy/artifacts/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ owned: Object.keys(artifacts.owned || {}), keys: app.eternal.data.keys || 0, fragments: app.eternal.data.keyFragments || 0, opened: artifacts.opened || 0, duplicates: artifacts.duplicates || 0, shards: artifacts.shards || 0 }) });
       payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok || !payload.artifacts) return;
     }
@@ -256,14 +257,19 @@
 
   function applyArtifacts(artifacts) {
     if (!artifacts || !app.eternal) return;
+    app.eternal.data.artifacts.owned = Object.fromEntries((artifacts.owned || []).map((id) => [id, Date.now()]));
     for (const set of artifacts.claimed || []) app.eternal.data.artifacts.sets[`${set}-claimed`] = true;
+    for (const set of ["eclipse", "seraph", "dragon", "oracle", "obsidian", "velvet", "cosmos", "jester"]) app.eternal.data.artifacts.sets[set] = (artifacts.owned || []).filter((id) => id.startsWith(`${set}-`)).length;
+    if (Number.isInteger(artifacts.keys)) app.eternal.data.keys = artifacts.keys;
+    if (Number.isInteger(artifacts.fragments)) app.eternal.data.keyFragments = artifacts.fragments;
+    if (Number.isInteger(artifacts.opened)) app.eternal.data.artifacts.opened = artifacts.opened;
+    if (Number.isInteger(artifacts.duplicates)) app.eternal.data.artifacts.duplicates = artifacts.duplicates;
+    if (Number.isInteger(artifacts.shards)) app.eternal.data.artifacts.shards = artifacts.shards;
     if (Number.isInteger(artifacts.wallet) && artifacts.wallet >= 0) window.__IRIS_SET_WALLET?.(artifacts.wallet);
     app.profile.save();
   }
 
   async function claimArtifactSet(eternal, set) {
-    const syncResponse = await fetch("/api/economy/artifacts/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ owned: Object.keys(eternal.data.artifacts.owned || {}) }) });
-    if (!syncResponse.ok) return;
     const response = await fetch(`/api/economy/artifacts/${encodeURIComponent(set)}/claim`, { method: "POST", credentials: "include" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok || !payload.artifact) {
@@ -272,7 +278,7 @@
     }
     const artifact = payload.artifact;
     eternal.data.artifacts.sets[`${set}-claimed`] = true;
-    eternal.data.keys += artifact.keys;
+    applyArtifacts(artifact.artifacts);
     window.__IRIS_SET_WALLET?.(artifact.wallet);
     eternal.app.profile.save();
     eternal.app.audio.play("bigwin");
@@ -703,6 +709,19 @@
   }
   if (app.eternal) {
     app.eternal.handleOdysseyRound = function () {};
+    app.eternal.grantArtifact = function () { return null; };
+    app.eternal.openArtifactVault = async function () {
+      const response = await fetch("/api/economy/artifacts/open", { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.vault) { void refreshArtifacts(); return; }
+      const vault = payload.vault;
+      applyArtifacts(vault.artifacts);
+      this.app.profile.save();
+      this.render("artifacts");
+      this.app.audio.play("bigwin");
+      this.app.celebration.burst(.6);
+      this.app.toast("ETERNAL VAULT OPEN", vault.drops.length ? vault.drops.map((item) => item.name).join(" · ") : "全秘宝完成ボーナス", "*");
+    };
     app.eternal.updateSet = function (set) {
       const owned = Object.keys(this.data.artifacts.owned).filter((id) => id.startsWith(`${set}-`)).length;
       this.data.artifacts.sets[set] = owned;
@@ -732,11 +751,9 @@
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok || !payload.odyssey) return;
       const result = payload.odyssey;
-      if (boon === "key") this.data.keys += 1;
       if (boon === "fame") this.addRenown(500);
       if (floor >= 12 && !result.active) {
-        this.data.keys += 3;
-        this.grantArtifact("mythic", false);
+        void refreshArtifacts();
       }
       applyOdyssey(result);
       this.app.audio.play(boon === "coins" || floor >= 12 ? "bigwin" : "chime");

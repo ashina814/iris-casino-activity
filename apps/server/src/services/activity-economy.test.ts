@@ -128,6 +128,27 @@ describe("ActivityEconomyService missions", () => {
     await expect(service.claimArtifactSet(user, "eclipse")).rejects.toMatchObject({ code: "casino_transaction_conflict" });
   });
 
+  it("opens an Eternal Artifact vault from server-owned keys only", async () => {
+    const store = new MemoryStore();
+    store.save({ users: { [user.id]: { artifactMigrated: true, artifactOwned: [], artifactClaims: [], artifactKeys: 1, artifactFragments: 0, artifactOpened: 0, artifactDuplicates: 0, artifactShards: 0 } } });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+    const vault = await service.openArtifactVault(user);
+    expect(vault.artifacts).toMatchObject({ keys: 0, opened: 1 });
+    expect(vault.drops).toHaveLength(3);
+    expect(vault.drops.every((item) => vault.artifacts.owned.includes(item.id))).toBe(true);
+    await expect(service.openArtifactVault(user)).rejects.toMatchObject({ code: "casino_transaction_conflict" });
+  });
+
+  it("does not accept artifact ownership changes after the initial migration", async () => {
+    const store = new MemoryStore();
+    store.save({ users: { [user.id]: { artifactMigrated: true, artifactOwned: ["eclipse-0"], artifactClaims: [] } } });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+    const artifacts = await service.migrateArtifacts(user, ["eclipse-1"], { keys: 0, fragments: 0, opened: 0, duplicates: 0, shards: 0 });
+    expect(artifacts.owned).toEqual(["eclipse-0"]);
+  });
+
   it("awards a server-recorded daily mission once even when its round is retried", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
       if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 5600, currency: "Ris" }), { headers: { "content-type": "application/json" } });

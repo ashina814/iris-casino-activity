@@ -83,6 +83,7 @@ type ActivityProgress = {
   artifactShards: number;
   raidClaims: string[];
   partyClaims: string[];
+  duelClaims: string[];
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -620,9 +621,23 @@ export class ActivityEconomyService {
   }
 
   async claimDuel(user: DiscordUser, duelId: string, amount: number) {
-    if (amount <= 0) return { amount: 0, wallet: null, currency: "Ris" };
+    const progress = this.progressFor(user.id);
+    if (progress.duelClaims.includes(duelId)) {
+      const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+      return { amount: 0, alreadyClaimed: true, wallet: wallet.wallet, currency: wallet.currency };
+    }
+    if (amount <= 0) {
+      const next = { ...progress, duelClaims: [...progress.duelClaims, duelId].slice(-500) };
+      this.state.users[user.id] = next;
+      this.options.store.save(this.state);
+      const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+      return { amount: 0, alreadyClaimed: false, wallet: wallet.wallet, currency: wallet.currency };
+    }
     const result = await requestActivityAdjustment({ transactionId: `activity-pvp-${user.id}-${duelId}`, discordUserId: user.id, sessionId: `pvp-${duelId}`, operation: "credit", amount, reason: "pvp" }, this.options.env, this.options.fetch);
-    return { amount, wallet: result.wallet, currency: result.currency };
+    const next = { ...progress, duelClaims: [...progress.duelClaims, duelId].slice(-500) };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { amount, alreadyClaimed: false, wallet: result.wallet, currency: result.currency };
   }
 
   awardDuelSeason(user: DiscordUser, result: "win" | "loss" | "tie") {
@@ -1211,7 +1226,8 @@ function normalizeProgress(value: unknown): ActivityProgress {
     artifactDuplicates: safeNonNegativeInteger(raw.artifactDuplicates),
     artifactShards: safeNonNegativeInteger(raw.artifactShards),
     raidClaims: Array.isArray(raw.raidClaims) ? [...new Set(raw.raidClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : [],
-    partyClaims: Array.isArray(raw.partyClaims) ? [...new Set(raw.partyClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : []
+    partyClaims: Array.isArray(raw.partyClaims) ? [...new Set(raw.partyClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : [],
+    duelClaims: Array.isArray(raw.duelClaims) ? [...new Set(raw.duelClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : []
   };
 }
 
@@ -1289,7 +1305,8 @@ function initialProgress(): ActivityProgress {
     artifactDuplicates: 0,
     artifactShards: 0,
     raidClaims: [],
-    partyClaims: []
+    partyClaims: [],
+    duelClaims: []
   };
 }
 

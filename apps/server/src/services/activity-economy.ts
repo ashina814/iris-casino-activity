@@ -82,6 +82,7 @@ type ActivityProgress = {
   artifactDuplicates: number;
   artifactShards: number;
   raidClaims: string[];
+  partyClaims: string[];
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -579,6 +580,11 @@ export class ActivityEconomyService {
   }
 
   async claimPartyCrown(user: DiscordUser, crownId: string) {
+    const progress = this.progressFor(user.id);
+    if (progress.partyClaims.includes(crownId)) {
+      const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+      return { amount: 0, alreadyClaimed: true, wallet: wallet.wallet, currency: wallet.currency };
+    }
     const result = await requestActivityAdjustment({
       transactionId: `activity-party-${user.id}-${crownId}`,
       discordUserId: user.id,
@@ -587,7 +593,10 @@ export class ActivityEconomyService {
       amount: 500,
       reason: "party"
     }, this.options.env, this.options.fetch);
-    return { amount: 500, wallet: result.wallet, currency: result.currency };
+    const next = { ...progress, partyClaims: [...progress.partyClaims, crownId].slice(-500) };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { amount: 500, alreadyClaimed: false, wallet: result.wallet, currency: result.currency };
   }
 
   async claimRaid(user: DiscordUser, raidId: string) {
@@ -1201,7 +1210,8 @@ function normalizeProgress(value: unknown): ActivityProgress {
     artifactOpened: safeNonNegativeInteger(raw.artifactOpened),
     artifactDuplicates: safeNonNegativeInteger(raw.artifactDuplicates),
     artifactShards: safeNonNegativeInteger(raw.artifactShards),
-    raidClaims: Array.isArray(raw.raidClaims) ? [...new Set(raw.raidClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : []
+    raidClaims: Array.isArray(raw.raidClaims) ? [...new Set(raw.raidClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : [],
+    partyClaims: Array.isArray(raw.partyClaims) ? [...new Set(raw.partyClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : []
   };
 }
 
@@ -1278,7 +1288,8 @@ function initialProgress(): ActivityProgress {
     artifactOpened: 0,
     artifactDuplicates: 0,
     artifactShards: 0,
-    raidClaims: []
+    raidClaims: [],
+    partyClaims: []
   };
 }
 

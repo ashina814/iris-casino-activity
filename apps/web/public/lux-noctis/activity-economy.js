@@ -473,6 +473,7 @@
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok || !payload.crown) throw new Error("party crown unavailable");
       room.claimedCrowns.add(crownId);
+      if (payload.crown.alreadyClaimed) return;
       window.__IRIS_SET_WALLET?.(payload.crown.wallet);
       room.app.audio.play("bigwin");
       room.app.bigWin(payload.crown.amount, "PARTY CROWN", "RIS celebration reward");

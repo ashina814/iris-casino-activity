@@ -10,6 +10,7 @@
   let missionRefresh = 0;
   let vaultBusy = false;
   let vaultRefresh = 0;
+  let nightEventRefresh = 0;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -86,6 +87,14 @@
     return payload.vault;
   }
 
+  async function requestNightEvent() {
+    const response = await fetch("/api/economy/night-event", { credentials: "include" });
+    if (!response.ok) throw new Error("night event unavailable");
+    const payload = await response.json();
+    if (!payload?.ok || !payload.nightEvent) throw new Error("invalid night event response");
+    return payload.nightEvent;
+  }
+
   function applyMissions(missions) {
     if (!missions || !Array.isArray(missions.items)) return;
     const localItems = new Map(app.profile.data.missions.items.map((item) => [item.id, item]));
@@ -123,6 +132,25 @@
     const refresh = ++vaultRefresh;
     void requestVault().then((vault) => {
       if (refresh === vaultRefresh) applyVault(vault);
+    }).catch(() => {});
+  }
+
+  function applyNightEvent(nightEvent) {
+    if (!nightEvent || typeof nightEvent !== "object") return;
+    app.profile.data.nightEvent = {
+      active: typeof nightEvent.active === "string" ? nightEvent.active : null,
+      remaining: Number.isInteger(nightEvent.remaining) && nightEvent.remaining >= 0 ? nightEvent.remaining : 0,
+      nextIn: Number.isInteger(nightEvent.nextIn) && nightEvent.nextIn >= 0 ? nightEvent.nextIn : 6
+    };
+    if (Number.isInteger(nightEvent.wallet) && nightEvent.wallet >= 0) window.__IRIS_SET_WALLET?.(nightEvent.wallet);
+    app.profile.save();
+    app.updateNightEventUi();
+  }
+
+  function refreshNightEvent() {
+    const refresh = ++nightEventRefresh;
+    void requestNightEvent().then((nightEvent) => {
+      if (refresh === nightEventRefresh) applyNightEvent(nightEvent);
     }).catch(() => {});
   }
 
@@ -250,10 +278,21 @@
   const recordRemoteProgress = app.recordRemoteProgress;
   app.profile.progress = function () {};
   app.recordRemoteProgress = function (...args) {
+    const activeEvent = this.activeNightEvent?.();
+    const round = args[0] || {};
     const result = recordRemoteProgress.apply(this, args);
+    const wager = Math.max(0, Math.floor(round.wager || 0));
+    const payout = Math.max(0, Math.floor(round.payout || 0));
+    const baseXp = Math.max(20, Math.floor(wager * 0.018) + (payout > wager ? 80 : 20));
+    if (activeEvent?.id === "stardust") this.profile.addXp(baseXp);
+    if (activeEvent?.id === "crown") {
+      const boostedXp = Math.floor(baseXp * (1 + Math.min(this.profile.data.streak.current, 10) * 0.1));
+      this.profile.addXp(Math.max(0, boostedXp - baseXp));
+    }
     void this.maybeRelief();
     refreshMissions();
     refreshVault();
+    refreshNightEvent();
     return result;
   };
 
@@ -299,4 +338,5 @@
     .catch(() => {});
   refreshMissions();
   refreshVault();
+  refreshNightEvent();
 })();

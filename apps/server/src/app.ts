@@ -246,6 +246,15 @@ export function createApp(options: CreateAppOptions = {}) {
     })
   );
 
+  app.get(
+    "/api/economy/night-event",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      res.json({ ok: true, nightEvent: await activityEconomy.nightEventStatus(user) });
+    })
+  );
+
   app.post(
     "/api/economy/vault/claim",
     asyncRoute(async (req, res) => {

@@ -24,6 +24,9 @@ type ActivityProgress = {
   vaultReady: boolean;
   vaultClaims: number;
   vaultOffer: number[] | null;
+  nightEventActive: NightEventId | null;
+  nightEventRemaining: number;
+  nightEventNextIn: number;
   seals: number;
   purchases: Record<TreasuryItemId, number>;
   purchaseRequests: Record<string, { itemId: TreasuryItemId; pay: TreasuryPay }>;
@@ -31,6 +34,7 @@ type ActivityProgress = {
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
 type MissionProgress = { id: string; event: MissionEvent; target: number; reward: number; progress: number; claimed: boolean };
+type NightEventId = "stardust" | "vault" | "echo" | "crown";
 export type TrustedMissionRound = { id: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>> };
 
 type ActivityProgressState = {
@@ -47,6 +51,8 @@ const missionPool: Omit<MissionProgress, "progress" | "claimed">[] = [
   { id: "cascade", event: "slotCascade", target: 3, reward: 1000 }, { id: "poker", event: "pokerGood", target: 1, reward: 900 }, { id: "baccarat", event: "baccaratRound", target: 3, reward: 650 },
   { id: "sicbo", event: "sicboRound", target: 3, reward: 700 }, { id: "keno", event: "kenoFour", target: 1, reward: 1000 }
 ];
+const nightEventRounds: Record<NightEventId, number> = { stardust: 4, vault: 4, echo: 3, crown: 4 };
+const nightEventIds = Object.keys(nightEventRounds) as NightEventId[];
 
 const adjustmentResponseSchema = z.object({
   ok: z.literal(true),
@@ -140,6 +146,12 @@ export class ActivityEconomyService {
     return this.publicVault(progress, wallet.wallet, wallet.currency);
   }
 
+  async nightEventStatus(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return this.publicNightEvent(progress, wallet.wallet, wallet.currency);
+  }
+
   async claimVault(user: DiscordUser, chestIndex: number) {
     let progress = this.progressFor(user.id);
     if (!progress.vaultReady || progress.vaultPot < 100) {
@@ -199,7 +211,20 @@ export class ActivityEconomyService {
       wallet = result.wallet;
       currency = result.currency;
     }
-    progress = this.advanceVault(progress, round);
+    const nightEvent = this.advanceNightEvent(progress, round);
+    if (nightEvent.bonus > 0) {
+      const result = await requestActivityAdjustment({
+        transactionId: `activity-event-${user.id}-${round.id}`,
+        discordUserId: user.id,
+        sessionId: `event-${round.id}`,
+        operation: "credit",
+        amount: nightEvent.bonus,
+        reason: "event"
+      }, this.options.env, this.options.fetch);
+      wallet = result.wallet;
+      currency = result.currency;
+    }
+    progress = this.advanceVault(nightEvent.progress, round, nightEvent.active === "vault");
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -324,9 +349,10 @@ export class ActivityEconomyService {
     return next;
   }
 
-  private advanceVault(progress: ActivityProgress, round: TrustedMissionRound): ActivityProgress {
+  private advanceVault(progress: ActivityProgress, round: TrustedMissionRound, doubled: boolean): ActivityProgress {
     if (progress.vaultReady) return progress;
-    const gain = Math.min(10, Math.max(1, 2 + Math.floor(round.wager / 2500) + (round.payout > round.wager ? 1 : 0)));
+    const baseGain = Math.min(10, Math.max(1, 2 + Math.floor(round.wager / 2500) + (round.payout > round.wager ? 1 : 0)));
+    const gain = doubled ? baseGain * 2 : baseGain;
     const vaultCharge = Math.min(100, progress.vaultCharge + gain);
     const vaultReady = vaultCharge >= 100 && progress.vaultPot >= 100;
     return {
@@ -335,6 +361,23 @@ export class ActivityEconomyService {
       vaultReady,
       vaultOffer: vaultReady && !progress.vaultReady ? vaultOffer() : progress.vaultOffer
     };
+  }
+
+  private advanceNightEvent(progress: ActivityProgress, round: TrustedMissionRound) {
+    const active = progress.nightEventActive;
+    const bonus = active === "echo" && round.payout > round.wager
+      ? Math.min(500, Math.max(25, Math.floor((round.payout - round.wager) * 0.03)))
+      : 0;
+    if (active) {
+      const remaining = Math.max(0, progress.nightEventRemaining - 1);
+      if (remaining > 0) return { active, bonus, progress: { ...progress, nightEventRemaining: remaining } };
+      return { active, bonus, progress: { ...progress, nightEventActive: null, nightEventRemaining: 0, nightEventNextIn: 4 + randomInt(4) } };
+    }
+
+    const nextIn = Math.max(0, progress.nightEventNextIn - 1);
+    if (nextIn > 0) return { active: null, bonus, progress: { ...progress, nightEventNextIn: nextIn } };
+    const next = nightEventIds[randomInt(nightEventIds.length)]!;
+    return { active: null, bonus, progress: { ...progress, nightEventActive: next, nightEventRemaining: nightEventRounds[next], nightEventNextIn: 0 } };
   }
 
   private publicTreasury(progress: ActivityProgress, wallet: number, currency: string) {
@@ -356,6 +399,16 @@ export class ActivityEconomyService {
       charge: progress.vaultCharge,
       ready: progress.vaultReady,
       claims: progress.vaultClaims
+    };
+  }
+
+  private publicNightEvent(progress: ActivityProgress, wallet: number, currency: string) {
+    return {
+      wallet,
+      currency,
+      active: progress.nightEventActive,
+      remaining: progress.nightEventRemaining,
+      nextIn: progress.nightEventNextIn
     };
   }
 }
@@ -427,6 +480,9 @@ function normalizeProgress(value: unknown): ActivityProgress {
     vaultReady: raw.vaultReady === true,
     vaultClaims: safeNonNegativeInteger(raw.vaultClaims),
     vaultOffer: normalizeVaultOffer(raw.vaultOffer),
+    nightEventActive: isNightEventId(raw.nightEventActive) ? raw.nightEventActive : null,
+    nightEventRemaining: safeNonNegativeInteger(raw.nightEventRemaining),
+    nightEventNextIn: safeNonNegativeInteger(raw.nightEventNextIn, 6),
     seals: safeNonNegativeInteger(raw.seals),
     purchases: normalizePurchases(raw.purchases),
     purchaseRequests: normalizePurchaseRequests(raw.purchaseRequests)
@@ -449,6 +505,9 @@ function initialProgress(): ActivityProgress {
     vaultReady: false,
     vaultClaims: 0,
     vaultOffer: null,
+    nightEventActive: null,
+    nightEventRemaining: 0,
+    nightEventNextIn: 6,
     seals: 0,
     purchases: normalizePurchases(),
     purchaseRequests: {}
@@ -491,6 +550,10 @@ function normalizeVaultOffer(value: unknown): number[] | null {
   if (!Array.isArray(value) || value.length !== 3) return null;
   const allowed = new Set([0.1, 0.25, 0.5, 1]);
   return value.every((item) => typeof item === "number" && allowed.has(item)) ? [...value] : null;
+}
+
+function isNightEventId(value: unknown): value is NightEventId {
+  return typeof value === "string" && nightEventIds.includes(value as NightEventId);
 }
 
 function normalizePurchases(value?: Partial<Record<TreasuryItemId, unknown>>): Record<TreasuryItemId, number> {

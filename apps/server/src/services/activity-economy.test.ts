@@ -55,4 +55,34 @@ describe("ActivityEconomyService missions", () => {
       .map(([, init]) => JSON.parse(String((init as RequestInit).body)) as { reason: string });
     expect(adjustmentBodies.filter((body) => body.reason === "vault")).toHaveLength(1);
   });
+
+  it("settles Fortune Echo once from the server-owned night event", async () => {
+    const store = new MemoryStore();
+    store.save({
+      users: {
+        [user.id]: {
+          lastDaily: "", dailyStreak: 0, reserve: 3000, notes: 0, noteRemainder: 0, reliefClaimed: false,
+          missionDate: "", missions: [], missionRounds: [],
+          vaultPot: 5000, vaultCharge: 0, vaultReady: false, vaultClaims: 0, vaultOffer: null,
+          nightEventActive: "echo", nightEventRemaining: 1, nightEventNextIn: 0,
+          seals: 0, purchases: { stardust: 0, capsule: 0, key: 0, seal: 0 }, purchaseRequests: {}
+        }
+      }
+    });
+    const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
+      if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 7030, currency: "Ris" }), { headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } });
+    });
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+
+    await service.recordMissionRound(user, { id: "echo-round", wager: 100, payout: 1100 });
+    await service.recordMissionRound(user, { id: "echo-round", wager: 100, payout: 1100 });
+
+    const eventAdjustments = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes("/activity/adjustments"))
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)) as { reason: string; amount: number })
+      .filter((body) => body.reason === "event");
+    expect(eventAdjustments).toHaveLength(1);
+    expect(eventAdjustments[0]).toMatchObject({ reason: "event", amount: 30 });
+  });
 });

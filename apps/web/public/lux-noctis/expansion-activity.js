@@ -42,7 +42,8 @@
       this.status = "DEALING FROM THE IRIS SHOE";
       this.render();
       try {
-        const round = (await post("/api/games/dragon/rounds", { roundId: crypto.randomUUID(), selection: this.selection, bet: this.bet })).round;
+        const request = window.__IRIS_ACTIVITY_REQUESTS__.begin("dragon", () => ({ id: crypto.randomUUID(), selection: this.selection, bet: this.bet }));
+        const round = (await post("/api/games/dragon/rounds", { roundId: request.id, selection: request.selection, bet: request.bet })).round;
         await core.wait(this.app.profile.data.settings.reducedMotion ? 30 : 320);
         this.dragon = round.dragon;
         this.app.audio.play("card");
@@ -53,6 +54,7 @@
         this.status = round.outcome === "suited" ? "SUITED TIE" : round.outcome === "tie" ? "TIE" : round.outcome === "dragon" ? "DRAGON WINS" : "TIGER WINS";
         recordRemote("dragon", round.roundId, this.bet, round.payout || 0, "DRAGON & TIGER", this.status);
         setWallet(round.wallet);
+        window.__IRIS_ACTIVITY_REQUESTS__.complete("dragon", request.id);
       } catch (error) {
         this.status = "DRAGON TABLE UNAVAILABLE";
         this.app.toast("DRAGON UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L");
@@ -73,7 +75,8 @@
       this.render();
       this.app.audio.play("spin");
       try {
-        const spin = (await post("/api/games/wheel/spins", { spinId: crypto.randomUUID(), bet: this.bet })).spin;
+        const request = window.__IRIS_ACTIVITY_REQUESTS__.begin("wheel", () => ({ id: crypto.randomUUID(), bet: this.bet }));
+        const spin = (await post("/api/games/wheel/spins", { spinId: request.id, bet: request.bet })).spin;
         const index = spin.index;
         const segments = 24;
         const step = 360 / segments;
@@ -89,6 +92,7 @@
         this.app.audio.play(spin.multiplier >= 3 ? "bigwin" : spin.multiplier ? "win" : "lose");
         recordRemote("wheel", spin.spinId, this.bet, spin.payout || 0, "FORTUNE CONSTELLATION", this.result.label);
         setWallet(spin.wallet);
+        window.__IRIS_ACTIVITY_REQUESTS__.complete("wheel", request.id);
       } catch (error) {
         this.app.toast("FORTUNE WHEEL UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L");
       } finally {
@@ -108,13 +112,13 @@
       this.message = "THE MOONSTONE DICE ARE ROLLING";
       this.render();
       try {
-        this.irisCrapsStartId ??= crypto.randomUUID();
+        this.irisCrapsStartId ??= crypto.randomUUID(); this.irisCrapsStartSelection ??= this.selection; this.irisCrapsStartBet ??= this.bet;
         this.irisCrapsRollActionId ??= crypto.randomUUID();
         const payload = this.remoteRoundId
           ? await post(`/api/games/craps/rounds/${encodeURIComponent(this.remoteRoundId)}/roll`, { actionId: this.irisCrapsRollActionId })
-          : await post("/api/games/craps/rounds", { roundId: this.irisCrapsStartId, selection: this.selection, bet: this.bet });
+          : await post("/api/games/craps/rounds", { roundId: this.irisCrapsStartId, selection: this.irisCrapsStartSelection, bet: this.irisCrapsStartBet });
         const round = payload.round;
-        this.irisCrapsStartId = null;
+        this.irisCrapsStartId = null; this.irisCrapsStartSelection = null; this.irisCrapsStartBet = null;
         this.irisCrapsRollActionId = null;
         this.remoteRoundId = round.roundId;
         const delay = this.app.profile.data.settings.reducedMotion ? 80 : 520;
@@ -148,7 +152,8 @@
       this.render();
       this.app.audio.play("spin");
       try {
-        const drop = (await post("/api/games/plinko/drops", { dropId: crypto.randomUUID(), bet: this.bet, risk: this.risk })).drop;
+        const request = window.__IRIS_ACTIVITY_REQUESTS__.begin("plinko", () => ({ id: crypto.randomUUID(), bet: this.bet, risk: this.risk }));
+        const drop = (await post("/api/games/plinko/drops", { dropId: request.id, bet: request.bet, risk: request.risk })).drop;
         const path = this.pathFor(drop.choices);
         const duration = this.app.profile.data.settings.reducedMotion ? 420 : 2400;
         const start = performance.now();
@@ -167,6 +172,7 @@
         this.root.querySelector("#plinkoStatus").textContent = `POCKET x${drop.multiplier}  ${core.formatL(drop.payout)}`;
         recordRemote("plinko", drop.dropId, this.bet, drop.payout || 0, "STARFALL PLINKO", `x${drop.multiplier}`);
         setWallet(drop.wallet);
+        window.__IRIS_ACTIVITY_REQUESTS__.complete("plinko", request.id);
       } catch (error) {
         this.app.toast("PLINKO UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L");
       } finally {
@@ -197,16 +203,20 @@
       if (this.phase !== "idle" || this.busy) return;
       this.busy = true; this.status = "DEALING FROM THE IRIS SHOE"; this.render();
       try {
-        const round = (await post("/api/games/hilo/rounds", { roundId: crypto.randomUUID(), bet: this.bet })).round;
+        this.irisHiLoStartId ??= crypto.randomUUID(); this.irisHiLoStartBet ??= this.bet;
+        const round = (await post("/api/games/hilo/rounds", { roundId: this.irisHiLoStartId, bet: this.irisHiLoStartBet })).round;
+        this.irisHiLoStartId = null; this.irisHiLoStartBet = null;
         apply(round); this.phase = "active"; this.status = "CHOOSE THE NEXT CARD"; this.app.audio.play("card"); setWallet(round.wallet);
       } catch (error) { this.app.toast("HI-LO UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
       finally { this.busy = false; this.render(); }
     };
     game.guess = async function (direction) {
-      if (this.phase !== "active" || this.busy || !this.remoteRoundId) return;
+      if (this.phase !== "active" || this.busy || !this.remoteRoundId || (this.irisHiLoActionDirection && this.irisHiLoActionDirection !== direction)) return;
       this.busy = true; this.phase = "revealing"; this.status = `${direction.toUpperCase()} LOCKED`; this.render();
       try {
-        const round = (await post(`/api/games/hilo/rounds/${encodeURIComponent(this.remoteRoundId)}/guess`, { actionId: crypto.randomUUID(), direction })).round;
+        this.irisHiLoActionId ??= crypto.randomUUID(); this.irisHiLoActionDirection ??= direction;
+        const round = (await post(`/api/games/hilo/rounds/${encodeURIComponent(this.remoteRoundId)}/guess`, { actionId: this.irisHiLoActionId, direction })).round;
+        this.irisHiLoActionId = null; this.irisHiLoActionDirection = null;
         await core.wait(this.app.profile.data.settings.reducedMotion ? 45 : 330);
         apply(round); setWallet(round.wallet);
         if (round.phase === "settled") { this.phase = "result"; this.status = round.payout ? `${round.correct} CARD STREAK` : "STREAK LOST"; recordRemote("hilo",round.roundId,this.bet,round.payout||0,"MIDNIGHT HI-LO",this.status); resetAfterResult(); }
@@ -215,10 +225,12 @@
       finally { this.busy = false; this.render(); }
     };
     game.cash = async function () {
-      if (this.phase !== "active" || this.busy || !this.correct || !this.remoteRoundId) return;
+      if (this.phase !== "active" || this.busy || !this.correct || !this.remoteRoundId || this.irisHiLoActionDirection) return;
       this.busy = true;
       try {
-        const round = (await post(`/api/games/hilo/rounds/${encodeURIComponent(this.remoteRoundId)}/cash`, { actionId: crypto.randomUUID() })).round;
+        this.irisHiLoActionId ??= crypto.randomUUID();
+        const round = (await post(`/api/games/hilo/rounds/${encodeURIComponent(this.remoteRoundId)}/cash`, { actionId: this.irisHiLoActionId })).round;
+        this.irisHiLoActionId = null;
         apply(round); this.phase = "result"; this.status = `${round.correct} CARD STREAK`; recordRemote("hilo",round.roundId,this.bet,round.payout||0,"MIDNIGHT HI-LO",this.status); setWallet(round.wallet); resetAfterResult();
       } catch (error) { this.app.toast("HI-LO UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
       finally { this.busy = false; this.render(); }
@@ -239,21 +251,21 @@
     game.start = async function () {
       if (this.phase !== "idle") return;
       this.clearReset(); this.status = "SEALING THE IRIS GRID"; this.render();
-      try { const round = (await post("/api/games/mines/rounds", { roundId: crypto.randomUUID(), bet: this.bet, mineCount: this.mineCount })).round; apply(round); this.status = "ROUND LIVE"; this.app.audio.play("chime"); setWallet(round.wallet); }
+      try { this.irisMinesStartId ??= crypto.randomUUID(); this.irisMinesStartBet ??= this.bet; this.irisMinesStartCount ??= this.mineCount; const round = (await post("/api/games/mines/rounds", { roundId: this.irisMinesStartId, bet: this.irisMinesStartBet, mineCount: this.irisMinesStartCount })).round; this.irisMinesStartId = null; this.irisMinesStartBet = null; this.irisMinesStartCount = null; apply(round); this.status = "ROUND LIVE"; this.app.audio.play("chime"); setWallet(round.wallet); }
       catch (error) { this.app.toast("MINES UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
       finally { this.render(); }
     };
     game.reveal = async function (index) {
-      if (this.phase !== "active" || this.revealed.has(index) || this.busy) return;
+      if (this.phase !== "active" || this.revealed.has(index) || this.busy || (this.irisMinesActionType && (this.irisMinesActionType !== "reveal" || this.irisMinesActionIndex !== index))) return;
       this.busy = true;
-      try { const round = (await post(`/api/games/mines/rounds/${encodeURIComponent(this.remoteRoundId)}/reveal`, { actionId: crypto.randomUUID(), index })).round; apply(round); this.status = round.phase === "active" ? `SAFE ${round.revealed.length}  x${round.multiplier.toFixed(2)}` : round.hit ? "MINE DETONATED" : "ABYSSAL CASH OUT"; this.app.audio.play(round.hit ? "lose" : "chip"); setWallet(round.wallet); if (round.phase === "settled") { recordRemote("mines",round.roundId,this.bet,round.payout||0,"ABYSSAL MINES",this.status); resetAfterResult(); } }
+      try { this.irisMinesActionId ??= crypto.randomUUID(); this.irisMinesActionType ??= "reveal"; this.irisMinesActionIndex ??= index; const round = (await post(`/api/games/mines/rounds/${encodeURIComponent(this.remoteRoundId)}/reveal`, { actionId: this.irisMinesActionId, index })).round; this.irisMinesActionId = null; this.irisMinesActionType = null; this.irisMinesActionIndex = null; apply(round); this.status = round.phase === "active" ? `SAFE ${round.revealed.length}  x${round.multiplier.toFixed(2)}` : round.hit ? "MINE DETONATED" : "ABYSSAL CASH OUT"; this.app.audio.play(round.hit ? "lose" : "chip"); setWallet(round.wallet); if (round.phase === "settled") { recordRemote("mines",round.roundId,this.bet,round.payout||0,"ABYSSAL MINES",this.status); resetAfterResult(); } }
       catch (error) { this.app.toast("MINES UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
       finally { this.busy = false; this.render(); }
     };
     game.cashOut = async function () {
-      if (this.phase !== "active" || !this.revealed.size || this.busy) return;
+      if (this.phase !== "active" || !this.revealed.size || this.busy || this.irisMinesActionType) return;
       this.busy = true;
-      try { const round = (await post(`/api/games/mines/rounds/${encodeURIComponent(this.remoteRoundId)}/cash`, { actionId: crypto.randomUUID() })).round; apply(round); this.status = "ABYSSAL CASH OUT"; recordRemote("mines",round.roundId,this.bet,round.payout||0,"ABYSSAL MINES",this.status); this.app.audio.play("win"); setWallet(round.wallet); resetAfterResult(); }
+      try { this.irisMinesActionId ??= crypto.randomUUID(); this.irisMinesActionType ??= "cash"; const round = (await post(`/api/games/mines/rounds/${encodeURIComponent(this.remoteRoundId)}/cash`, { actionId: this.irisMinesActionId })).round; this.irisMinesActionId = null; this.irisMinesActionType = null; apply(round); this.status = "ABYSSAL CASH OUT"; recordRemote("mines",round.roundId,this.bet,round.payout||0,"ABYSSAL MINES",this.status); this.app.audio.play("win"); setWallet(round.wallet); resetAfterResult(); }
       catch (error) { this.app.toast("MINES UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
       finally { this.busy = false; this.render(); }
     };
@@ -266,14 +278,14 @@
     game.deal = async function () {
       if (this.busy || this.phase !== "betting") return;
       this.busy = true; this.status = "DEALING FROM THE IRIS SHOE"; this.render();
-      try { const round = (await post("/api/games/war/rounds", { roundId: crypto.randomUUID(), bet: this.bet })).round; await core.wait(this.app.profile.data.settings.reducedMotion ? 30 : 280); apply(round); if(round.phase==="settled")recordRemote("war",round.roundId,this.bet,round.payout||0,round.label||"CROWN WAR",`${round.player?.rank||"?"} VS ${round.dealer?.rank||"?"}`); this.app.audio.play("card"); }
+      try { this.irisWarStartId ??= crypto.randomUUID(); this.irisWarStartBet ??= this.bet; const round = (await post("/api/games/war/rounds", { roundId: this.irisWarStartId, bet: this.irisWarStartBet })).round; this.irisWarStartId = null; this.irisWarStartBet = null; await core.wait(this.app.profile.data.settings.reducedMotion ? 30 : 280); apply(round); if(round.phase==="settled")recordRemote("war",round.roundId,this.bet,round.payout||0,round.label||"CROWN WAR",`${round.player?.rank||"?"} VS ${round.dealer?.rank||"?"}`); this.app.audio.play("card"); }
       catch (error) { this.app.toast("WAR UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
       finally { this.busy = false; this.render(); }
     };
     const act = async function (action) {
-      if (this.phase !== "tie" || this.busy || !this.remoteRoundId) return;
+      if (this.phase !== "tie" || this.busy || !this.remoteRoundId || (this.irisWarAction && this.irisWarAction !== action)) return;
       this.busy = true;
-      try { const round = (await post(`/api/games/war/rounds/${encodeURIComponent(this.remoteRoundId)}/actions`, { actionId: crypto.randomUUID(), action })).round; apply(round); recordRemote("war",round.roundId,this.bet*(round.wentToWar?2:1),round.payout||0,round.label||"CROWN WAR",`${round.player?.rank||"?"} VS ${round.dealer?.rank||"?"}`); this.app.audio.play(round.payout ? "win" : "lose"); }
+      try { this.irisWarActionId ??= crypto.randomUUID(); this.irisWarAction ??= action; const round = (await post(`/api/games/war/rounds/${encodeURIComponent(this.remoteRoundId)}/actions`, { actionId: this.irisWarActionId, action })).round; this.irisWarActionId = null; this.irisWarAction = null; apply(round); recordRemote("war",round.roundId,this.bet*(round.wentToWar?2:1),round.payout||0,round.label||"CROWN WAR",`${round.player?.rank||"?"} VS ${round.dealer?.rank||"?"}`); this.app.audio.play(round.payout ? "win" : "lose"); }
       catch (error) { this.app.toast("WAR UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
       finally { this.busy = false; this.render(); }
     };
@@ -288,10 +300,11 @@
       if (this.busy) return;
       this.busy = true; this.status = "THE ORACLE IS DRAWING"; this.draws = []; this.marked = new Set(["2-2"]); this.lines = []; this.render();
       try {
-        const draw = (await post("/api/games/bingo/draws", { drawId: crypto.randomUUID(), bet: this.bet })).draw;
+        const request = window.__IRIS_ACTIVITY_REQUESTS__.begin("bingo", () => ({ id: crypto.randomUUID(), bet: this.bet }));
+        const draw = (await post("/api/games/bingo/draws", { drawId: request.id, bet: request.bet })).draw;
         this.card = draw.card;
         for (const number of draw.draws) { await core.wait(this.app.profile.data.settings.reducedMotion ? 20 : 115); this.draws.push(number); this.mark(number); this.app.audio.play("stop"); this.render(); }
-        this.lines = draw.lines; this.status = draw.lines.length ? `BINGO! ${draw.lines.length} LINE` : "NO BINGO"; recordRemote("bingo",draw.drawId,this.bet,draw.payout||0,draw.lines.length?"LUNAR BINGO":"BINGO NIGHT",`${draw.lines.length} LINES`,draw.lines.length?[{event:"bingo"}]:[]); setWallet(draw.wallet);
+        this.lines = draw.lines; this.status = draw.lines.length ? `BINGO! ${draw.lines.length} LINE` : "NO BINGO"; recordRemote("bingo",draw.drawId,this.bet,draw.payout||0,draw.lines.length?"LUNAR BINGO":"BINGO NIGHT",`${draw.lines.length} LINES`,draw.lines.length?[{event:"bingo"}]:[]); setWallet(draw.wallet); window.__IRIS_ACTIVITY_REQUESTS__.complete("bingo", request.id);
       } catch (error) { this.app.toast("BINGO UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
       finally { this.busy = false; this.render(); }
     };
@@ -306,7 +319,9 @@
     game.issue = async function () {
       if (this.active) return;
       try {
-        const ticket = (await post("/api/games/scratch/tickets", { ticketId: crypto.randomUUID(), bet: this.bet })).ticket;
+        this.irisScratchStartId ??= crypto.randomUUID();
+        const ticket = (await post("/api/games/scratch/tickets", { ticketId: this.irisScratchStartId, bet: this.bet })).ticket;
+        this.irisScratchStartId = null;
         this.remoteTicketId = ticket.ticketId; this.remoteScratchReveals = new Set(); this.active = true; this.resolved = false; this.revealed.clear(); this.strokes = []; this.symbols = ticket.symbols.map(() => null); this.status = "SCRATCH THE IRIS TICKET"; this.resize(true); setWallet(ticket.wallet); this.renderUi();
       } catch (error) { this.app.toast("SCRATCH UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
     };
@@ -314,7 +329,9 @@
       if (this.resolved || !this.remoteTicketId) return;
       this.resolved = true;
       try {
-        const ticket = (await post(`/api/games/scratch/tickets/${encodeURIComponent(this.remoteTicketId)}/reveal-all`, { actionId: crypto.randomUUID() })).ticket;
+        this.irisScratchActionId ??= crypto.randomUUID();
+        const ticket = (await post(`/api/games/scratch/tickets/${encodeURIComponent(this.remoteTicketId)}/reveal-all`, { actionId: this.irisScratchActionId })).ticket;
+        this.irisScratchActionId = null;
         this.symbols = ticket.symbols.map((id) => symbols[id]); this.revealed = new Set(Array.from({ length: 9 }, (_x, index) => index)); this.active = false; this.status = ticket.payout ? `${ticket.payout} Ris RETURN` : "NO MATCH"; recordRemote("scratch",ticket.ticketId,this.bet,ticket.payout||0,ticket.payout?"MIDNIGHT SCRATCH WIN":"SCRATCH RESULT",this.status,ticket.payout?[{event:"scratchWin"}]:[]); this.drawTicket(); setWallet(ticket.wallet);
       } catch (error) { this.app.toast("SCRATCH UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
       this.renderUi();

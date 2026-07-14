@@ -39,7 +39,8 @@
 
     this.busy = true;
     try {
-      const round = await request(crypto.randomUUID(), [...this.bets].map(([selection, amount]) => ({ selection, amount })));
+      const pending = window.__IRIS_ACTIVITY_REQUESTS__.begin("baccarat", () => ({ id: crypto.randomUUID(), bets: [...this.bets].map(([selection, amount]) => ({ selection, amount })) }));
+      const round = await request(pending.id, pending.bets);
       this.phase = "dealing";
       this.player = [];
       this.banker = [];
@@ -64,6 +65,7 @@
       this.bets.clear();
       window.__IRIS_RECORD_REMOTE__?.("baccarat",round.roundId,wager,round.payout||0,"VELVET BACCARAT",this.resultText);
       setWallet(round.wallet);
+      window.__IRIS_ACTIVITY_REQUESTS__.complete("baccarat", pending.id);
       this.render();
       this.setTimeout(() => {
         this.player = [];

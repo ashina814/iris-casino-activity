@@ -15,7 +15,8 @@
     this.renderInfo();
     this.app.audio.play("spin");
     try {
-      const response = await fetch("/api/games/slots/spins", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ spinId: crypto.randomUUID(), bet: this.bet }) });
+      const request = window.__IRIS_ACTIVITY_REQUESTS__.begin("slots", () => ({ id: crypto.randomUUID(), bet: this.bet }));
+      const response = await fetch("/api/games/slots/spins", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ spinId: request.id, bet: request.bet }) });
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok) throw new Error(payload?.error?.message || "Slots are unavailable.");
       const spin = payload.spin;
@@ -40,6 +41,7 @@
       document.querySelector("#slotStatus").textContent = spin.payout ? "THE VAULT PAYS OUT" : "THE VAULT WAITS";
       window.__IRIS_RECORD_REMOTE__?.("slots",spin.spinId,this.bet,spin.payout||0,"CELESTIAL VAULT",`${spin.cascades.length} CASCADES`);
       setWallet(spin.wallet);
+      window.__IRIS_ACTIVITY_REQUESTS__.complete("slots", request.id);
     } catch (error) {
       this.app.toast("SLOTS UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L");
     } finally {

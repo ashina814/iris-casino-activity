@@ -18,9 +18,10 @@
     this.root.querySelector("#kenoStatus").textContent = "THE ORACLE IS DRAWING";
     this.render();
     try {
+      const request = window.__IRIS_ACTIVITY_REQUESTS__.begin("keno", () => ({ id: crypto.randomUUID(), bet: this.bet, picks }));
       const response = await fetch("/api/games/keno/draws", {
         method: "POST", credentials: "include", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ drawId: crypto.randomUUID(), bet: this.bet, picks })
+        body: JSON.stringify({ drawId: request.id, bet: request.bet, picks: request.picks })
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok) throw new Error(payload?.error?.message || "Keno is unavailable.");
@@ -37,6 +38,7 @@
       this.root.querySelector("#kenoStatus").textContent = this.lastPayout ? `${this.lastMatches} HIT  ${core.formatL(this.lastPayout)} RETURN` : `${this.lastMatches} HIT  THE ORACLE IS SILENT`;
       window.__IRIS_RECORD_REMOTE__?.("keno",payload.draw.drawId,this.bet,payload.draw.payout||0,"ORACLE KENO",`${payload.draw.hits} HITS`);
       setWallet(payload.draw.wallet);
+      window.__IRIS_ACTIVITY_REQUESTS__.complete("keno", request.id);
     } catch (error) {
       this.app.toast("KENO UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L");
     } finally {

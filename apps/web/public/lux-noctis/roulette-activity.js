@@ -22,8 +22,9 @@
       return;
     }
 
-    const spinId = crypto.randomUUID();
-    const bets = [...this.bets].map(([selection, amount]) => ({ selection, amount }));
+    const request = window.__IRIS_ACTIVITY_REQUESTS__.begin("roulette", () => ({ id: crypto.randomUUID(), bets: [...this.bets].map(([selection, amount]) => ({ selection, amount })) }));
+    const spinId = request.id;
+    const bets = request.bets;
     this.spinning = true;
     this.lastBets = new Map(this.bets);
     this.clearHighlight();
@@ -58,6 +59,7 @@
       this.betOrder = [];
       window.__IRIS_RECORD_REMOTE__?.("roulette",payload.spin.spinId,wager,payload.spin.payout||0,"STELLAR ROULETTE",`${result} ${color}`);
       updateWallet(payload.spin.wallet);
+      window.__IRIS_ACTIVITY_REQUESTS__.complete("roulette", spinId);
     } catch (error) {
       this.app.toast("ROULETTE UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L");
     } finally {

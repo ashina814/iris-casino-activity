@@ -15,9 +15,10 @@
     this.root.querySelector("#sicStatus").textContent = "THE OBSIDIAN DICE ARE ROLLING";
     this.render();
     try {
+      const request = window.__IRIS_ACTIVITY_REQUESTS__.begin("sicbo", () => ({ id: crypto.randomUUID(), bets: [...this.bets].map(([selection, amount]) => ({ selection, amount })) }));
       const response = await fetch("/api/games/sicbo/spins", {
         method: "POST", credentials: "include", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ spinId: crypto.randomUUID(), bets: [...this.bets].map(([selection, amount]) => ({ selection, amount })) })
+        body: JSON.stringify({ spinId: request.id, bets: request.bets })
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok) throw new Error(payload?.error?.message || "Sic Bo is unavailable.");
@@ -35,6 +36,7 @@
       this.order = [];
       window.__IRIS_RECORD_REMOTE__?.("sicbo",payload.spin.spinId,wager,payload.spin.payout||0,"OBSIDIAN SIC BO",payload.spin.dice.join(" + "));
       setWallet(payload.spin.wallet);
+      window.__IRIS_ACTIVITY_REQUESTS__.complete("sicbo", request.id);
     } catch (error) {
       this.app.toast("SIC BO UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L");
     } finally {

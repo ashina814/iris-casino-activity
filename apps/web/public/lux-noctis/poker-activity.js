@@ -33,7 +33,11 @@
     this.result = null;
     this.render();
     try {
-      const round = await request("/api/games/poker/rounds", { roundId: crypto.randomUUID(), bet: this.bet });
+      this.irisPokerStartId ??= crypto.randomUUID();
+      this.irisPokerStartBet ??= this.bet;
+      const round = await request("/api/games/poker/rounds", { roundId: this.irisPokerStartId, bet: this.irisPokerStartBet });
+      this.irisPokerStartId = null;
+      this.irisPokerStartBet = null;
       this.remoteRoundId = round.roundId;
       await showCards(this, round.cards, null);
       if (this.disposed) return;

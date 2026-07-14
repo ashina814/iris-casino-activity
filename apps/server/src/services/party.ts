@@ -228,6 +228,13 @@ export class PartyService {
     return { week: room.leagueWeek, league };
   }
 
+  isMember(userId: string, roomId: string): boolean {
+    const room = this.rooms.get(roomId);
+    if (!room) return false;
+    this.prune(room);
+    return room.players.has(userId);
+  }
+
   canClaimCrown(userId: string, roomId: string, crownId: string): boolean {
     const room = this.rooms.get(roomId);
     if (!room) return false;

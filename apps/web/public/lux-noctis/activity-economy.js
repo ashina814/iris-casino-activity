@@ -275,6 +275,34 @@
     }
   };
 
+  const handlePartyMessage = app.room.handle;
+  app.room.handle = function (message) {
+    if (message?.type !== "crown") return handlePartyMessage.call(this, message);
+    this.crown = 0;
+    this.render();
+    void claimPartyCrown(this, message.id);
+  };
+
+  async function claimPartyCrown(room, crownId, attempt = 0) {
+    if (!crownId || room.claimedCrowns.has(crownId)) return;
+    try {
+      const response = await fetch(`/api/party/crowns/${encodeURIComponent(crownId)}/claim`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ room: room.room })
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.crown) throw new Error("party crown unavailable");
+      room.claimedCrowns.add(crownId);
+      window.__IRIS_SET_WALLET?.(payload.crown.wallet);
+      room.app.audio.play("bigwin");
+      room.app.bigWin(payload.crown.amount, "PARTY CROWN", "RIS celebration reward");
+    } catch {
+      if (attempt < 2) setTimeout(() => { void claimPartyCrown(room, crownId, attempt + 1); }, 1500 * (attempt + 1));
+    }
+  }
+
   const recordRemoteProgress = app.recordRemoteProgress;
   app.profile.progress = function () {};
   app.recordRemoteProgress = function (...args) {

@@ -321,6 +321,19 @@ export function createApp(options: CreateAppOptions = {}) {
     })
   );
 
+  app.post(
+    "/api/party/crowns/:crownId/claim",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const crownId = z.string().uuid().safeParse(req.params.crownId);
+      const parsed = z.object({ room: partyRoomSchema }).safeParse(req.body);
+      if (!crownId.success || !parsed.success) throw new AppError(400, "bad_request", "Party Crown claim is invalid.");
+      if (!party.canClaimCrown(user.id, parsed.data.room, crownId.data)) throw new AppError(403, "unauthorized", "Party Crown is unavailable.");
+      res.json({ ok: true, crown: await activityEconomy.claimPartyCrown(user, crownId.data) });
+    })
+  );
+
   app.get("/api/party/events", (req, res) => {
     const user = getSession(req).user;
     const room = partyRoomSchema.safeParse(req.query.room);
@@ -338,7 +351,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!parsed.success) throw new AppError(400, "bad_request", "Blackjack bet is invalid.");
 
       const round = await blackjack.start(user, parsed.data.roundId, parsed.data.bet);
-      await recordBlackjackMission(activityEconomy, user, round);
+      await recordBlackjackMission(activityEconomy, party, user, round);
       res.status(201).json({ ok: true, round: blackjack.publicState(round) });
     })
   );
@@ -351,7 +364,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const roundId = req.params.roundId;
       if (!roundId) throw new AppError(400, "bad_request", "Blackjack round is invalid.");
       const round = await blackjack.get(user, roundId);
-      await recordBlackjackMission(activityEconomy, user, round);
+      await recordBlackjackMission(activityEconomy, party, user, round);
       res.json({ ok: true, round: blackjack.publicState(round) });
     })
   );
@@ -367,7 +380,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!parsed.success) throw new AppError(400, "bad_request", "Blackjack action is invalid.");
 
       const round = await blackjack.act(user, roundId, parsed.data.actionId, parsed.data.action as BlackjackAction);
-      await recordBlackjackMission(activityEconomy, user, round);
+      await recordBlackjackMission(activityEconomy, party, user, round);
       res.json({ ok: true, round: blackjack.publicState(round) });
     })
   );
@@ -378,11 +391,11 @@ export function createApp(options: CreateAppOptions = {}) {
   );
   app.post(
     "/api/games/scratch/tickets/:ticketId/reveal",
-    asyncRoute(async (req, res) => { const user=getSession(req).user, id=req.params.ticketId;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");const p=z.object({actionId:z.string().min(1).max(128),index:z.number().int()}).safeParse(req.body);if(!id||!p.success)throw new AppError(400,"bad_request","Scratch reveal invalid.");const ticket=await scratch.reveal(user,id,p.data.actionId,p.data.index);await recordMissionIfSettled(activityEconomy,user,"scratch",ticket.ticketId,ticket.bet,ticket.payout,ticket.phase);res.json({ok:true,ticket}); })
+    asyncRoute(async (req, res) => { const user=getSession(req).user, id=req.params.ticketId;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");const p=z.object({actionId:z.string().min(1).max(128),index:z.number().int()}).safeParse(req.body);if(!id||!p.success)throw new AppError(400,"bad_request","Scratch reveal invalid.");const ticket=await scratch.reveal(user,id,p.data.actionId,p.data.index);await recordMissionIfSettled(activityEconomy,party,user,"scratch",ticket.ticketId,ticket.bet,ticket.payout,ticket.phase);res.json({ok:true,ticket}); })
   );
   app.post(
     "/api/games/scratch/tickets/:ticketId/reveal-all",
-    asyncRoute(async (req, res) => { const user=getSession(req).user, id=req.params.ticketId;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");const p=z.object({actionId:z.string().min(1).max(128)}).safeParse(req.body);if(!id||!p.success)throw new AppError(400,"bad_request","Scratch reveal invalid.");const ticket=await scratch.revealAll(user,id,p.data.actionId);await recordMissionIfSettled(activityEconomy,user,"scratch",ticket.ticketId,ticket.bet,ticket.payout,ticket.phase);res.json({ok:true,ticket}); })
+    asyncRoute(async (req, res) => { const user=getSession(req).user, id=req.params.ticketId;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");const p=z.object({actionId:z.string().min(1).max(128)}).safeParse(req.body);if(!id||!p.success)throw new AppError(400,"bad_request","Scratch reveal invalid.");const ticket=await scratch.revealAll(user,id,p.data.actionId);await recordMissionIfSettled(activityEconomy,party,user,"scratch",ticket.ticketId,ticket.bet,ticket.payout,ticket.phase);res.json({ok:true,ticket}); })
   );
 
   app.post(
@@ -392,7 +405,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       const parsed = z.object({ drawId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Bingo ticket is invalid.");
-      const draw = await bingo.play(user, parsed.data.drawId, parsed.data.bet); await recordMissionIfSettled(activityEconomy,user,"bingo",draw.drawId,draw.bet,draw.payout,draw.phase); res.json({ ok: true, draw });
+      const draw = await bingo.play(user, parsed.data.drawId, parsed.data.bet); await recordMissionIfSettled(activityEconomy,party,user,"bingo",draw.drawId,draw.bet,draw.payout,draw.phase); res.json({ ok: true, draw });
     })
   );
 
@@ -403,7 +416,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "War round is invalid.");
-      const round = await war.deal(user, parsed.data.roundId, parsed.data.bet); await recordMissionIfSettled(activityEconomy,user,"war",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
+      const round = await war.deal(user, parsed.data.roundId, parsed.data.bet); await recordMissionIfSettled(activityEconomy,party,user,"war",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
     })
   );
 
@@ -414,7 +427,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       const parsed = z.object({ actionId: z.string().min(1).max(128), action: z.enum(["surrender", "war"]) }).safeParse(req.body);
       if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "War action is invalid.");
-      const round = await war.act(user, roundId, parsed.data.actionId, parsed.data.action); await recordMissionIfSettled(activityEconomy,user,"war",round.roundId,round.bet,round.payout,round.phase); res.json({ ok: true, round });
+      const round = await war.act(user, roundId, parsed.data.actionId, parsed.data.action); await recordMissionIfSettled(activityEconomy,party,user,"war",round.roundId,round.bet,round.payout,round.phase); res.json({ ok: true, round });
     })
   );
 
@@ -425,7 +438,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe(), mineCount: z.number().int() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Mines round is invalid.");
-      const round = await mines.start(user, parsed.data.roundId, parsed.data.bet, parsed.data.mineCount); await recordMissionIfSettled(activityEconomy,user,"mines",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
+      const round = await mines.start(user, parsed.data.roundId, parsed.data.bet, parsed.data.mineCount); await recordMissionIfSettled(activityEconomy,party,user,"mines",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
     })
   );
 
@@ -436,7 +449,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       const parsed = z.object({ actionId: z.string().min(1).max(128), index: z.number().int() }).safeParse(req.body);
       if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Mines reveal is invalid.");
-      const round = await mines.reveal(user, roundId, parsed.data.actionId, parsed.data.index); await recordMissionIfSettled(activityEconomy,user,"mines",round.roundId,round.bet,round.payout,round.phase); res.json({ ok: true, round });
+      const round = await mines.reveal(user, roundId, parsed.data.actionId, parsed.data.index); await recordMissionIfSettled(activityEconomy,party,user,"mines",round.roundId,round.bet,round.payout,round.phase); res.json({ ok: true, round });
     })
   );
 
@@ -447,7 +460,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       const parsed = z.object({ actionId: z.string().min(1).max(128) }).safeParse(req.body);
       if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Mines cash action is invalid.");
-      const round = await mines.cash(user, roundId, parsed.data.actionId); await recordMissionIfSettled(activityEconomy,user,"mines",round.roundId,round.bet,round.payout,round.phase); res.json({ ok: true, round });
+      const round = await mines.cash(user, roundId, parsed.data.actionId); await recordMissionIfSettled(activityEconomy,party,user,"mines",round.roundId,round.bet,round.payout,round.phase); res.json({ ok: true, round });
     })
   );
 
@@ -459,7 +472,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Hi-Lo round is invalid.");
       const round = await hilo.start(user, parsed.data.roundId, parsed.data.bet);
-      await recordMissionIfSettled(activityEconomy,user,"hilo",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
+      await recordMissionIfSettled(activityEconomy,party,user,"hilo",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
     })
   );
 
@@ -471,7 +484,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ actionId: z.string().min(1).max(128), direction: z.enum(["low", "high"]) }).safeParse(req.body);
       if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Hi-Lo guess is invalid.");
       const round = await hilo.guess(user, roundId, parsed.data.actionId, parsed.data.direction);
-      await recordMissionIfSettled(activityEconomy,user,"hilo",round.roundId,round.bet,round.payout,round.phase); res.json({ ok: true, round });
+      await recordMissionIfSettled(activityEconomy,party,user,"hilo",round.roundId,round.bet,round.payout,round.phase); res.json({ ok: true, round });
     })
   );
 
@@ -483,7 +496,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ actionId: z.string().min(1).max(128) }).safeParse(req.body);
       if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Hi-Lo cash action is invalid.");
       const round = await hilo.cash(user, roundId, parsed.data.actionId);
-      await recordMissionIfSettled(activityEconomy,user,"hilo",round.roundId,round.bet,round.payout,round.phase); res.json({ ok: true, round });
+      await recordMissionIfSettled(activityEconomy,party,user,"hilo",round.roundId,round.bet,round.payout,round.phase); res.json({ ok: true, round });
     })
   );
 
@@ -495,7 +508,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ dropId: z.string().min(1).max(128), bet: z.number().int().positive().safe(), risk: z.enum(["low", "medium", "high"]) }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Plinko drop is invalid.");
       const drop = await plinko.drop(user, parsed.data.dropId, parsed.data.bet, parsed.data.risk);
-      await recordMissionIfSettled(activityEconomy,user,"plinko",drop.dropId,drop.bet,drop.payout,drop.phase); res.json({ ok: true, drop });
+      await recordMissionIfSettled(activityEconomy,party,user,"plinko",drop.dropId,drop.bet,drop.payout,drop.phase); res.json({ ok: true, drop });
     })
   );
 
@@ -507,7 +520,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ roundId: z.string().min(1).max(128), selection: z.enum(["pass", "dont", "field", "any7", "exact6", "exact8"]), bet: z.number().int().positive().safe() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Craps round is invalid.");
       const round = await craps.start(user, parsed.data.roundId, parsed.data.selection, parsed.data.bet);
-      await recordMissionIfSettled(activityEconomy,user,"craps",round.roundId,round.bet,round.payout,round.phase);
+      await recordMissionIfSettled(activityEconomy,party,user,"craps",round.roundId,round.bet,round.payout,round.phase);
       res.json({ ok: true, round });
     })
   );
@@ -521,7 +534,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ actionId: z.string().min(1).max(128) }).safeParse(req.body);
       if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Craps round is invalid.");
       const round = await craps.roll(user, roundId, parsed.data.actionId);
-      await recordMissionIfSettled(activityEconomy,user,"craps",round.roundId,round.bet,round.payout,round.phase);
+      await recordMissionIfSettled(activityEconomy,party,user,"craps",round.roundId,round.bet,round.payout,round.phase);
       res.json({ ok: true, round });
     })
   );
@@ -534,7 +547,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ roundId: z.string().min(1).max(128), selection: z.enum(["dragon", "tiger", "tie", "suited"]), bet: z.number().int().positive().safe() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Dragon round is invalid.");
       const round = await dragon.deal(user, parsed.data.roundId, parsed.data.selection, parsed.data.bet);
-      await recordMissionIfSettled(activityEconomy,user,"dragon",round.roundId,round.bet,round.payout,round.phase);
+      await recordMissionIfSettled(activityEconomy,party,user,"dragon",round.roundId,round.bet,round.payout,round.phase);
       res.json({ ok: true, round });
     })
   );
@@ -547,7 +560,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ spinId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Wheel spin is invalid.");
       const spin = await wheel.spin(user, parsed.data.spinId, parsed.data.bet);
-      await recordMissionIfSettled(activityEconomy,user,"wheel",spin.spinId,spin.bet,spin.payout,spin.phase);
+      await recordMissionIfSettled(activityEconomy,party,user,"wheel",spin.spinId,spin.bet,spin.payout,spin.phase);
       res.json({ ok: true, spin });
     })
   );
@@ -560,7 +573,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ drawId: z.string().min(1).max(128), bet: z.number().int().positive().safe(), picks: z.array(z.number().int().min(1).max(40)).min(5).max(10) }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Keno draw is invalid.");
       const draw = await keno.draw(user, parsed.data.drawId, parsed.data.bet, parsed.data.picks);
-      await activityEconomy.recordMissionRound(user, { id: `keno-${draw.drawId}`, wager: draw.bet, payout: draw.payout ?? 0, events: draw.hits !== null && draw.hits >= 4 ? { kenoFour: 1 } : {} });
+      await recordActivityRound(activityEconomy, party, user, { id: `keno-${draw.drawId}`, wager: draw.bet, payout: draw.payout ?? 0, events: draw.hits !== null && draw.hits >= 4 ? { kenoFour: 1 } : {} });
       res.json({ ok: true, draw });
     })
   );
@@ -573,7 +586,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ spinId: z.string().min(1).max(128), bets: z.array(z.object({ selection: z.string().min(1).max(32), amount: z.number().int().positive().safe() })).min(1).max(64) }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Sic Bo spin is invalid.");
       const spin = await sicbo.roll(user, parsed.data.spinId, parsed.data.bets);
-      await activityEconomy.recordMissionRound(user, { id: `sicbo-${spin.spinId}`, wager: spin.total, payout: spin.payout ?? 0, events: { sicboRound: 1 } });
+      await recordActivityRound(activityEconomy, party, user, { id: `sicbo-${spin.spinId}`, wager: spin.total, payout: spin.payout ?? 0, events: { sicboRound: 1 } });
       res.json({ ok: true, spin });
     })
   );
@@ -599,7 +612,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ held: z.array(z.boolean()).length(5) }).safeParse(req.body);
       if (!roundId || !parsed.success) throw new AppError(400, "bad_request", "Poker draw is invalid.");
       const round = await poker.draw(user, roundId, parsed.data.held);
-      if (round.phase === "settled") await activityEconomy.recordMissionRound(user, { id: `poker-${round.roundId}`, wager: round.bet, payout: round.payout ?? 0, events: round.result && round.result.rank >= 4 ? { pokerGood: 1 } : {} });
+      if (round.phase === "settled") await recordActivityRound(activityEconomy, party, user, { id: `poker-${round.roundId}`, wager: round.bet, payout: round.payout ?? 0, events: round.result && round.result.rank >= 4 ? { pokerGood: 1 } : {} });
       res.json({ ok: true, round });
     })
   );
@@ -615,7 +628,7 @@ export function createApp(options: CreateAppOptions = {}) {
       }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Baccarat round is invalid.");
       const round = await baccarat.deal(user, parsed.data.roundId, parsed.data.bets);
-      await activityEconomy.recordMissionRound(user, { id: `baccarat-${round.roundId}`, wager: round.total, payout: round.payout ?? 0, events: { baccaratRound: 1 } });
+      await recordActivityRound(activityEconomy, party, user, { id: `baccarat-${round.roundId}`, wager: round.total, payout: round.payout ?? 0, events: { baccaratRound: 1 } });
       res.json({ ok: true, round });
     })
   );
@@ -632,7 +645,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!parsed.success) throw new AppError(400, "bad_request", "Roulette spin is invalid.");
 
       const round = await roulette.spin(user, parsed.data.spinId, parsed.data.bets);
-      await activityEconomy.recordMissionRound(user, { id: `roulette-${round.spinId}`, wager: round.total, payout: round.payout ?? 0, events: round.number !== null && round.bets.some((bet) => bet.selection === `n:${round.number}`) ? { rouletteStraight: 1 } : {} });
+      await recordActivityRound(activityEconomy, party, user, { id: `roulette-${round.spinId}`, wager: round.total, payout: round.payout ?? 0, events: round.number !== null && round.bets.some((bet) => bet.selection === `n:${round.number}`) ? { rouletteStraight: 1 } : {} });
       res.json({ ok: true, spin: round });
     })
   );
@@ -645,7 +658,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ spinId: z.string().min(1).max(128), bet: z.number().int() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Slots spin is invalid.");
       const spin = await slots.spin(user, parsed.data.spinId, parsed.data.bet);
-      await activityEconomy.recordMissionRound(user, { id: `slots-${spin.spinId}`, wager: spin.wager, payout: spin.payout ?? 0, events: { freeSpins: spin.awarded, slotCascade: spin.cascades.length } });
+      await recordActivityRound(activityEconomy, party, user, { id: `slots-${spin.spinId}`, wager: spin.wager, payout: spin.payout ?? 0, events: { freeSpins: spin.awarded, slotCascade: spin.cascades.length } });
       res.json({ ok: true, spin });
     })
   );
@@ -659,7 +672,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const game = req.params.game;
       if (!parsed.success || !game || !["holdem", "tower", "threecard", "derby", "ascent", "arcana", "moonshot"].includes(game)) throw new AppError(400, "bad_request", "Game round is invalid.");
       const round = await legacyGames.start(user, game as "holdem" | "tower" | "threecard" | "derby" | "ascent" | "arcana" | "moonshot", parsed.data.roundId, parsed.data.bet, parsed.data);
-      await recordMissionIfSettled(activityEconomy,user,game,round.id,round.bet,round.payout,round.phase);
+      await recordMissionIfSettled(activityEconomy,party,user,game,round.id,round.bet,round.payout,round.phase);
       res.status(201).json({ ok: true, round });
     })
   );
@@ -672,7 +685,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ actionId: z.string().min(1).max(128), action: z.string().min(1).max(32), door: z.number().int().optional(), index: z.number().int().optional() }).safeParse(req.body);
       if (!roundId || !game || !parsed.success || !["holdem", "tower", "threecard", "ascent", "arcana", "moonshot"].includes(game)) throw new AppError(400, "bad_request", "Game action is invalid.");
       const round = await legacyGames.action(user, roundId, parsed.data.actionId, parsed.data.action, parsed.data);
-      await recordMissionIfSettled(activityEconomy,user,game,round.id,round.bet,round.payout,round.phase);
+      await recordMissionIfSettled(activityEconomy,party,user,game,round.id,round.bet,round.payout,round.phase);
       res.json({ ok: true, round });
     })
   );
@@ -754,9 +767,9 @@ function writePartyEvent(res: ExpressResponse, message: unknown) {
   res.write(`data: ${JSON.stringify(message)}\n\n`);
 }
 
-async function recordBlackjackMission(activityEconomy: ActivityEconomyService, user: DiscordUser, round: { id: string; phase: string; hands: { stakes: { bet: number }[]; result?: string }[]; settlements?: { payout: number }[] }) {
+async function recordBlackjackMission(activityEconomy: ActivityEconomyService, party: PartyService, user: DiscordUser, round: { id: string; phase: string; hands: { stakes: { bet: number }[]; result?: string }[]; settlements?: { payout: number }[] }) {
   if (round.phase !== "settled") return;
-  await activityEconomy.recordMissionRound(user, {
+  await recordActivityRound(activityEconomy, party, user, {
     id: `blackjack-${round.id}`,
     wager: round.hands.flatMap((hand) => hand.stakes).reduce((total, stake) => total + stake.bet, 0),
     payout: (round.settlements ?? []).reduce((total, settlement) => total + settlement.payout, 0),
@@ -764,9 +777,14 @@ async function recordBlackjackMission(activityEconomy: ActivityEconomyService, u
   });
 }
 
-async function recordMissionIfSettled(activityEconomy: ActivityEconomyService, user: DiscordUser, game: string, id: string, wager: number, payout: number | null, phase: string) {
+async function recordMissionIfSettled(activityEconomy: ActivityEconomyService, party: PartyService, user: DiscordUser, game: string, id: string, wager: number, payout: number | null, phase: string) {
   if (phase !== "settled") return;
-  await activityEconomy.recordMissionRound(user, { id: `${game}-${id}`, wager, payout: payout ?? 0 });
+  await recordActivityRound(activityEconomy, party, user, { id: `${game}-${id}`, wager, payout: payout ?? 0 });
+}
+
+async function recordActivityRound(activityEconomy: ActivityEconomyService, party: PartyService, user: DiscordUser, round: Parameters<ActivityEconomyService["recordMissionRound"]>[1]) {
+  await activityEconomy.recordMissionRound(user, round);
+  if (round.payout > round.wager) party.recordTrustedWin(user.id, round.payout - round.wager);
 }
 
 function activityHelmetOptions(env: ServerEnv) {

@@ -1,4 +1,5 @@
 import type { DiscordUser } from "@iris/shared";
+import { randomUUID } from "node:crypto";
 
 export type PartyAppearance = {
   level: number;
@@ -19,17 +20,27 @@ type PartyFeedItem = {
 
 type PartyMessage =
   | { type: "state"; players: PublicPartyPlayer[]; crown: number; feed: PartyFeedItem[] }
-  | { type: "feed"; item: PartyFeedItem };
+  | { type: "feed"; item: PartyFeedItem }
+  | { type: "crown"; id: string };
+
+type PartyCrown = {
+  id: string;
+  recipients: Set<string>;
+  createdAt: number;
+};
 
 export type PublicPartyPlayer = Omit<PartyPlayer, "lastSeen">;
 
 type PartyRoom = {
   players: Map<string, PartyPlayer>;
   feed: PartyFeedItem[];
+  crown: number;
+  crowns: Map<string, PartyCrown>;
   listeners: Set<(message: PartyMessage) => void>;
 };
 
 const PRESENCE_TTL_MS = 30_000;
+const PARTY_CROWN_TTL_MS = 10 * 60_000;
 
 export class PartyService {
   private readonly rooms = new Map<string, PartyRoom>();
@@ -64,6 +75,30 @@ export class PartyService {
     return this.state(room);
   }
 
+  recordTrustedWin(userId: string, net: number) {
+    if (!Number.isSafeInteger(net) || net <= 0) return;
+    for (const room of this.rooms.values()) {
+      this.prune(room);
+      if (!room.players.has(userId)) continue;
+      room.crown = Math.min(100, room.crown + clamp(Math.floor(net / 2000) + 1, 1, 18));
+      if (room.crown >= 100) {
+        room.crown = 0;
+        const crown: PartyCrown = { id: randomUUID(), recipients: new Set(room.players.keys()), createdAt: Date.now() };
+        room.crowns.set(crown.id, crown);
+        this.addFeed(room, "PARTY CROWN is full. A celebration reward is ready.");
+        this.broadcast(room, { type: "crown", id: crown.id });
+      }
+      this.broadcastState(room);
+    }
+  }
+
+  canClaimCrown(userId: string, roomId: string, crownId: string): boolean {
+    const room = this.rooms.get(roomId);
+    if (!room) return false;
+    this.prune(room);
+    return room.crowns.get(crownId)?.recipients.has(userId) === true;
+  }
+
   subscribe(roomId: string, userId: string, listener: (message: PartyMessage) => void): (() => void) | null {
     const room = this.rooms.get(roomId);
     if (!room) return null;
@@ -76,7 +111,7 @@ export class PartyService {
   private roomFor(roomId: string): PartyRoom {
     const existing = this.rooms.get(roomId);
     if (existing) return existing;
-    const room: PartyRoom = { players: new Map(), feed: [], listeners: new Set() };
+    const room: PartyRoom = { players: new Map(), feed: [], crown: 0, crowns: new Map(), listeners: new Set() };
     this.rooms.set(roomId, room);
     return room;
   }
@@ -98,13 +133,17 @@ export class PartyService {
     for (const [id, player] of room.players) {
       if (player.lastSeen < cutoff) room.players.delete(id);
     }
+    const crownCutoff = Date.now() - PARTY_CROWN_TTL_MS;
+    for (const [id, crown] of room.crowns) {
+      if (crown.createdAt < crownCutoff) room.crowns.delete(id);
+    }
   }
 
   private state(room: PartyRoom) {
     this.prune(room);
     return {
       players: Array.from(room.players.values(), ({ lastSeen: _lastSeen, ...player }) => player),
-      crown: 0,
+      crown: room.crown,
       feed: room.feed
     };
   }
@@ -116,4 +155,13 @@ export class PartyService {
   private broadcast(room: PartyRoom, message: PartyMessage) {
     for (const listener of room.listeners) listener(message);
   }
+
+  private addFeed(room: PartyRoom, text: string) {
+    room.feed.unshift({ text, time: Date.now() });
+    room.feed.splice(30);
+  }
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }

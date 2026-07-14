@@ -17,4 +17,21 @@ describe("PartyService", () => {
     expect(received).toEqual([{ type: "feed", item: expect.objectContaining({ text: "Yuki: OK" }) }]);
     unsubscribe?.();
   });
+
+  it("unlocks a Party Crown from trusted wins and limits its recipients to the active room", () => {
+    const party = new PartyService();
+    const secondUser = { id: "345678901234567890", username: "Haru", displayName: "Haru", avatarUrl: null };
+    party.join(user, "night-crown", appearance);
+    party.join(secondUser, "night-crown", appearance);
+    const received: unknown[] = [];
+    party.subscribe("night-crown", user.id, (message) => received.push(message));
+
+    for (let index = 0; index < 6; index += 1) party.recordTrustedWin(user.id, 40_000);
+
+    const crown = received.find((message): message is { type: "crown"; id: string } => Boolean(message && typeof message === "object" && (message as { type?: string }).type === "crown"));
+    expect(crown).toBeDefined();
+    expect(party.canClaimCrown(user.id, "night-crown", crown!.id)).toBe(true);
+    expect(party.canClaimCrown(secondUser.id, "night-crown", crown!.id)).toBe(true);
+    expect(party.canClaimCrown("456789012345678901", "night-crown", crown!.id)).toBe(false);
+  });
 });

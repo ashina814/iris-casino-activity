@@ -190,6 +190,18 @@ export class ActivityEconomyService {
     return { chestIndex, multiplier, amount, ...this.publicVault(next, result.wallet, result.currency) };
   }
 
+  async claimPartyCrown(user: DiscordUser, crownId: string) {
+    const result = await requestActivityAdjustment({
+      transactionId: `activity-party-${user.id}-${crownId}`,
+      discordUserId: user.id,
+      sessionId: `party-${crownId}`,
+      operation: "credit",
+      amount: 500,
+      reason: "party"
+    }, this.options.env, this.options.fetch);
+    return { amount: 500, wallet: result.wallet, currency: result.currency };
+  }
+
   async recordMissionRound(user: DiscordUser, round: TrustedMissionRound) {
     let progress = this.ensureMissionDay(user.id, this.progressFor(user.id));
     if (progress.missionRounds.includes(round.id)) {

@@ -37,7 +37,8 @@ export const ServerEnvSchema = z.object({
   BINGO_STATE_PATH: z.string().min(1).default("data/bingo-rounds.json"),
   SCRATCH_STATE_PATH: z.string().min(1).default("data/scratch-rounds.json"),
   LEGACY_GAMES_STATE_PATH: z.string().min(1).default("data/legacy-game-rounds.json"),
-  ACTIVITY_PROGRESS_STATE_PATH: z.string().min(1).default("data/activity-progress.json")
+  ACTIVITY_PROGRESS_STATE_PATH: z.string().min(1).default("data/activity-progress.json"),
+  PARTY_STATE_PATH: z.string().min(1).default("data/party-state.json")
 });
 
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;

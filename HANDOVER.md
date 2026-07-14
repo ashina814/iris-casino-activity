@@ -69,5 +69,5 @@ curl -fsS https://iris-casino.duckdns.org/api/health
 
 ## 残る運用確認
 
-- 進行中ラウンドの最中に Activity コンテナを再起動し、ゲーム固有の予約・精算が期待どおり復旧するかを本番前に確認する。
-- Party の在席情報とCrown進行はインメモリのため、Activityコンテナを再起動するとその時点のParty roomと未受取Crownは失われる。常駐運用で引き継ぐ必要がある場合は、Party状態を永続ストアへ移す。
+- Party room、Crownメーター、未受取Crownの受取資格は `PARTY_STATE_PATH`（既定: `data/party-state.json`）へ保存され、Dockerの永続ボリュームとともに復元される。SSE接続と30秒の在席TTLは再接続後に作り直される。
+- 進行中ラウンドの最中に Activity コンテナを再起動し、ゲーム固有の予約・精算とParty Crownの受取資格が期待どおり復旧するかを本番前に確認する。

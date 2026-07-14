@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { PartyService } from "./party.js";
+import { PartyService, type PartyStore } from "./party.js";
 
 const user = { id: "234567890123456789", username: "Yuki", displayName: "Yuki", avatarUrl: null };
 const appearance = { level: 7, game: "Lobby", glyph: "R" };
+
+class MemoryPartyStore implements PartyStore {
+  state: ReturnType<PartyStore["load"]> = { rooms: {} };
+  load() { return structuredClone(this.state); }
+  save(state: ReturnType<PartyStore["load"]>) { this.state = structuredClone(state); }
+}
 
 describe("PartyService", () => {
   it("derives the party member from the authenticated Discord user and broadcasts safe feed text", () => {
@@ -33,5 +39,16 @@ describe("PartyService", () => {
     expect(party.canClaimCrown(user.id, "night-crown", crown!.id)).toBe(true);
     expect(party.canClaimCrown(secondUser.id, "night-crown", crown!.id)).toBe(true);
     expect(party.canClaimCrown("456789012345678901", "night-crown", crown!.id)).toBe(false);
+  });
+
+  it("restores Party Crown eligibility after the service restarts", () => {
+    const store = new MemoryPartyStore();
+    const party = new PartyService({ store });
+    party.join(user, "night-restart", appearance);
+    for (let index = 0; index < 6; index += 1) party.recordTrustedWin(user.id, 40_000);
+    const crownId = store.state.rooms["night-restart"]!.crowns[0]!.id;
+
+    const restarted = new PartyService({ store });
+    expect(restarted.canClaimCrown(user.id, "night-restart", crownId)).toBe(true);
   });
 });

@@ -1,5 +1,7 @@
 import type { DiscordUser } from "@iris/shared";
 import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 export type PartyAppearance = {
   level: number;
@@ -39,15 +41,60 @@ type PartyRoom = {
   listeners: Set<(message: PartyMessage) => void>;
 };
 
+type StoredPartyRoom = {
+  players: PartyPlayer[];
+  feed: PartyFeedItem[];
+  crown: number;
+  crowns: { id: string; recipients: string[]; createdAt: number }[];
+};
+
+type PartyState = { rooms: Record<string, StoredPartyRoom> };
+
+export interface PartyStore {
+  load(): PartyState;
+  save(state: PartyState): void;
+}
+
+export class FilePartyStore implements PartyStore {
+  constructor(private readonly path: string) {}
+
+  load(): PartyState {
+    try {
+      return normalizeState(JSON.parse(readFileSync(this.path, "utf8")) as unknown);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return { rooms: {} };
+      throw error;
+    }
+  }
+
+  save(state: PartyState): void {
+    mkdirSync(dirname(this.path), { recursive: true });
+    writeFileSync(this.path, JSON.stringify(state), "utf8");
+  }
+}
+
 const PRESENCE_TTL_MS = 30_000;
 const PARTY_CROWN_TTL_MS = 10 * 60_000;
 
 export class PartyService {
   private readonly rooms = new Map<string, PartyRoom>();
 
+  constructor(private readonly options: { store?: PartyStore } = {}) {
+    for (const [roomId, room] of Object.entries(options.store?.load().rooms ?? {})) {
+      this.rooms.set(roomId, {
+        players: new Map(room.players.map((player) => [player.id, player])),
+        feed: room.feed,
+        crown: room.crown,
+        crowns: new Map(room.crowns.map((crown) => [crown.id, { ...crown, recipients: new Set(crown.recipients) }])),
+        listeners: new Set()
+      });
+    }
+  }
+
   join(user: DiscordUser, roomId: string, appearance: PartyAppearance) {
     const room = this.roomFor(roomId);
     this.upsertPlayer(room, user, appearance);
+    this.save();
     this.broadcastState(room);
     return this.state(room);
   }
@@ -55,6 +102,7 @@ export class PartyService {
   presence(user: DiscordUser, roomId: string, appearance: PartyAppearance) {
     const room = this.roomFor(roomId);
     this.upsertPlayer(room, user, appearance);
+    this.save();
     this.broadcastState(room);
     return this.state(room);
   }
@@ -71,6 +119,7 @@ export class PartyService {
     const item = { text, time: Date.now() };
     room.feed.unshift(item);
     room.feed.splice(30);
+    this.save();
     this.broadcast(room, { type: "feed", item });
     return this.state(room);
   }
@@ -88,6 +137,7 @@ export class PartyService {
         this.addFeed(room, "PARTY CROWN is full. A celebration reward is ready.");
         this.broadcast(room, { type: "crown", id: crown.id });
       }
+      this.save();
       this.broadcastState(room);
     }
   }
@@ -160,8 +210,59 @@ export class PartyService {
     room.feed.unshift({ text, time: Date.now() });
     room.feed.splice(30);
   }
+
+  private save() {
+    if (!this.options.store) return;
+    const rooms: Record<string, StoredPartyRoom> = {};
+    for (const [roomId, room] of this.rooms) {
+      rooms[roomId] = {
+        players: Array.from(room.players.values()),
+        feed: room.feed,
+        crown: room.crown,
+        crowns: Array.from(room.crowns.values(), (crown) => ({ ...crown, recipients: Array.from(crown.recipients) }))
+      };
+    }
+    this.options.store.save({ rooms });
+  }
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function normalizeState(value: unknown): PartyState {
+  const raw = value && typeof value === "object" && "rooms" in value ? value as { rooms?: unknown } : {};
+  const rooms = raw.rooms && typeof raw.rooms === "object" ? raw.rooms as Record<string, unknown> : {};
+  return {
+    rooms: Object.fromEntries(Object.entries(rooms).flatMap(([roomId, value]) => {
+      if (!/^[A-Za-z0-9_-]{1,32}$/.test(roomId) || !value || typeof value !== "object") return [];
+      const room = value as Partial<StoredPartyRoom>;
+      const players = Array.isArray(room.players) ? room.players.filter(isPartyPlayer) : [];
+      const feed = Array.isArray(room.feed) ? room.feed.filter(isFeedItem).slice(0, 30) : [];
+      const crowns = Array.isArray(room.crowns) ? room.crowns.flatMap(normalizeCrown).slice(-100) : [];
+      return [[roomId, { players, feed, crown: clamp(safeInteger(room.crown), 0, 100), crowns }]];
+    }))
+  };
+}
+
+function isPartyPlayer(value: unknown): value is PartyPlayer {
+  if (!value || typeof value !== "object") return false;
+  const player = value as Partial<PartyPlayer>;
+  return typeof player.id === "string" && typeof player.name === "string" && typeof player.game === "string" && typeof player.glyph === "string" && Number.isSafeInteger(player.level) && Number.isSafeInteger(player.lastSeen);
+}
+
+function isFeedItem(value: unknown): value is PartyFeedItem {
+  return Boolean(value && typeof value === "object" && typeof (value as Partial<PartyFeedItem>).text === "string" && Number.isSafeInteger((value as Partial<PartyFeedItem>).time));
+}
+
+function normalizeCrown(value: unknown): { id: string; recipients: string[]; createdAt: number }[] {
+  if (!value || typeof value !== "object") return [];
+  const crown = value as Partial<{ id: string; recipients: unknown; createdAt: number }>;
+  const createdAt = crown.createdAt;
+  if (typeof crown.id !== "string" || !Array.isArray(crown.recipients) || typeof createdAt !== "number" || !Number.isSafeInteger(createdAt)) return [];
+  return [{ id: crown.id, recipients: crown.recipients.filter((id): id is string => typeof id === "string"), createdAt }];
+}
+
+function safeInteger(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : 0;
 }

@@ -28,7 +28,7 @@ import { AppError, asyncRoute, sendError } from "./errors.js";
 import { createRateLimit } from "./middleware/rate-limit.js";
 import { getWalletForDiscordUser } from "./services/wallet.js";
 import { ActivityEconomyService, FileActivityProgressStore, isPurchaseId, isTreasuryItemId, isTreasuryPay } from "./services/activity-economy.js";
-import { PartyService } from "./services/party.js";
+import { FilePartyStore, PartyService } from "./services/party.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -75,7 +75,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const scratch = new ScratchService({ env, fetch: fetchFn, store: new FileScratchStore(env.SCRATCH_STATE_PATH) });
   const legacyGames = new LegacyGamesService({ env, fetch: fetchFn, store: new FileLegacyGameStore(env.LEGACY_GAMES_STATE_PATH) });
   const activityEconomy = new ActivityEconomyService({ env, fetch: fetchFn, store: new FileActivityProgressStore(env.ACTIVITY_PROGRESS_STATE_PATH) });
-  const party = new PartyService();
+  const party = new PartyService({ store: new FilePartyStore(env.PARTY_STATE_PATH) });
   const reconciliation = Promise.all([
     roulette.reconcileAll(),
     slots.reconcileAll(),

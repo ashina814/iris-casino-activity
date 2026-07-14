@@ -15,10 +15,17 @@ type ActivityProgress = {
   notes: number;
   noteRemainder: number;
   reliefClaimed: boolean;
+  missionDate: string;
+  missions: MissionProgress[];
+  missionRounds: string[];
   seals: number;
   purchases: Record<TreasuryItemId, number>;
   purchaseRequests: Record<string, { itemId: TreasuryItemId; pay: TreasuryPay }>;
 };
+
+type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
+type MissionProgress = { id: string; event: MissionEvent; target: number; reward: number; progress: number; claimed: boolean };
+export type TrustedMissionRound = { id: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>> };
 
 type ActivityProgressState = {
   users: Record<string, ActivityProgress>;
@@ -28,6 +35,12 @@ type TreasuryItemId = "stardust" | "capsule" | "key" | "seal";
 type TreasuryPay = "coins" | "notes";
 
 const treasuryItemIds = ["stardust", "capsule", "key", "seal"] as const satisfies readonly TreasuryItemId[];
+const missionPool: Omit<MissionProgress, "progress" | "claimed">[] = [
+  { id: "rounds", event: "round", target: 5, reward: 600 }, { id: "wins", event: "win", target: 3, reward: 900 }, { id: "wager", event: "wager", target: 10000, reward: 750 },
+  { id: "blackjack", event: "blackjack", target: 1, reward: 1200 }, { id: "roulette", event: "rouletteStraight", target: 1, reward: 1400 }, { id: "free", event: "freeSpins", target: 1, reward: 1200 },
+  { id: "cascade", event: "slotCascade", target: 3, reward: 1000 }, { id: "poker", event: "pokerGood", target: 1, reward: 900 }, { id: "baccarat", event: "baccaratRound", target: 3, reward: 650 },
+  { id: "sicbo", event: "sicboRound", target: 3, reward: 700 }, { id: "keno", event: "kenoFour", target: 1, reward: 1000 }
+];
 
 const adjustmentResponseSchema = z.object({
   ok: z.literal(true),
@@ -107,6 +120,44 @@ export class ActivityEconomyService {
     this.state.users[user.id] = { ...progress, reliefClaimed: true };
     this.options.store.save(this.state);
     return { claimed: true, amount, wallet: result.wallet, currency: result.currency };
+  }
+
+  async missionStatus(user: DiscordUser) {
+    const progress = this.ensureMissionDay(user.id, this.progressFor(user.id));
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { date: progress.missionDate, items: progress.missions, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async recordMissionRound(user: DiscordUser, round: TrustedMissionRound) {
+    let progress = this.ensureMissionDay(user.id, this.progressFor(user.id));
+    if (progress.missionRounds.includes(round.id)) {
+      const status = await this.missionStatus(user);
+      return { ...status, awarded: [] };
+    }
+    const events: Partial<Record<MissionEvent, number>> = { round: 1, wager: round.wager, ...round.events };
+    if (round.payout > round.wager) events.win = (events.win ?? 0) + 1;
+    const items = progress.missions.map((mission) => {
+      const amount = Math.max(0, Math.floor(events[mission.event] ?? 0));
+      const nextProgress = mission.claimed ? mission.progress : Math.min(mission.target, mission.progress + amount);
+      return { ...mission, progress: nextProgress, claimed: mission.claimed || nextProgress >= mission.target };
+    });
+    const newlyClaimed = items.filter((item, index) => item.claimed && !progress.missions[index]!.claimed);
+    let wallet: number | null = null;
+    let currency = "Ris";
+    for (const mission of newlyClaimed) {
+      const result = await requestActivityAdjustment({ transactionId: `activity-mission-${user.id}-${progress.missionDate}-${mission.id}`, discordUserId: user.id, sessionId: `mission-${progress.missionDate}-${mission.id}`, operation: "credit", amount: mission.reward, reason: "mission" }, this.options.env, this.options.fetch);
+      wallet = result.wallet;
+      currency = result.currency;
+    }
+    progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
+    this.state.users[user.id] = progress;
+    this.options.store.save(this.state);
+    if (wallet === null) {
+      const current = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+      wallet = current.wallet;
+      currency = current.currency;
+    }
+    return { date: progress.missionDate, items, awarded: newlyClaimed.map((item) => ({ id: item.id, amount: item.reward })), wallet, currency };
   }
 
   async purchaseTreasury(user: DiscordUser, purchaseId: string, itemId: TreasuryItemId, pay: TreasuryPay) {
@@ -213,6 +264,15 @@ export class ActivityEconomyService {
     return current ?? initialProgress();
   }
 
+  private ensureMissionDay(discordUserId: string, progress: ActivityProgress): ActivityProgress {
+    const date = jstDateKey();
+    if (progress.missionDate === date && progress.missions.length === 3) return progress;
+    const next = { ...progress, missionDate: date, missions: dailyMissions(date), missionRounds: [] };
+    this.state.users[discordUserId] = next;
+    this.options.store.save(this.state);
+    return next;
+  }
+
   private publicTreasury(progress: ActivityProgress, wallet: number, currency: string) {
     return {
       wallet,
@@ -284,6 +344,9 @@ function normalizeProgress(value: unknown): ActivityProgress {
     notes: safeNonNegativeInteger(raw.notes),
     noteRemainder: safeNonNegativeInteger(raw.noteRemainder),
     reliefClaimed: raw.reliefClaimed === true,
+    missionDate: typeof raw.missionDate === "string" ? raw.missionDate : "",
+    missions: normalizeMissions(raw.missions),
+    missionRounds: Array.isArray(raw.missionRounds) ? raw.missionRounds.filter((id): id is string => typeof id === "string" && id.length <= 160).slice(-500) : [],
     seals: safeNonNegativeInteger(raw.seals),
     purchases: normalizePurchases(raw.purchases),
     purchaseRequests: normalizePurchaseRequests(raw.purchaseRequests)
@@ -298,10 +361,36 @@ function initialProgress(): ActivityProgress {
     notes: 0,
     noteRemainder: 0,
     reliefClaimed: false,
+    missionDate: "",
+    missions: [],
+    missionRounds: [],
     seals: 0,
     purchases: normalizePurchases(),
     purchaseRequests: {}
   };
+}
+
+function dailyMissions(date: string): MissionProgress[] {
+  let seed = [...date].reduce((value, character) => ((value * 33) ^ character.charCodeAt(0)) >>> 0, 5381);
+  const pool = [...missionPool];
+  const selected: MissionProgress[] = [];
+  while (selected.length < 3 && pool.length) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    const mission = pool.splice(seed % pool.length, 1)[0]!;
+    selected.push({ ...mission, progress: 0, claimed: false });
+  }
+  return selected;
+}
+
+function normalizeMissions(value: unknown): MissionProgress[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((mission) => {
+    if (!mission || typeof mission !== "object") return [];
+    const raw = mission as Partial<MissionProgress>;
+    const template = missionPool.find((item) => item.id === raw.id);
+    if (!template) return [];
+    return [{ ...template, progress: Math.min(template.target, safeNonNegativeInteger(raw.progress)), claimed: raw.claimed === true }];
+  }).slice(0, 3);
 }
 
 function normalizePurchases(value?: Partial<Record<TreasuryItemId, unknown>>): Record<TreasuryItemId, number> {

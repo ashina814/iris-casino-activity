@@ -7,6 +7,7 @@
   let busy = false;
   let reliefBusy = false;
   let treasuryBusy = false;
+  let missionRefresh = 0;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -65,6 +66,33 @@
     const payload = await response.json();
     if (!payload?.ok || !payload.relief) throw new Error("invalid relief response");
     return payload.relief;
+  }
+
+  async function requestMissions() {
+    const response = await fetch("/api/economy/missions", { credentials: "include" });
+    if (!response.ok) throw new Error("missions unavailable");
+    const payload = await response.json();
+    if (!payload?.ok || !payload.missions) throw new Error("invalid missions response");
+    return payload.missions;
+  }
+
+  function applyMissions(missions) {
+    if (!missions || !Array.isArray(missions.items)) return;
+    const localItems = new Map(app.profile.data.missions.items.map((item) => [item.id, item]));
+    app.profile.data.missions = {
+      date: missions.date || app.profile.data.missions.date,
+      items: missions.items.map((item) => ({ ...localItems.get(item.id), ...item }))
+    };
+    if (Number.isInteger(missions.wallet) && missions.wallet >= 0) window.__IRIS_SET_WALLET?.(missions.wallet);
+    app.profile.save();
+    app.renderMissions();
+  }
+
+  function refreshMissions() {
+    const refresh = ++missionRefresh;
+    void requestMissions().then((missions) => {
+      if (refresh === missionRefresh) applyMissions(missions);
+    }).catch(() => {});
   }
 
   function purchaseId() {
@@ -150,9 +178,11 @@
   };
 
   const recordRemoteProgress = app.recordRemoteProgress;
+  app.profile.progress = function () {};
   app.recordRemoteProgress = function (...args) {
     const result = recordRemoteProgress.apply(this, args);
     void this.maybeRelief();
+    refreshMissions();
     return result;
   };
 
@@ -196,4 +226,5 @@
   requestTreasury("/api/economy/treasury", "GET")
     .then(applyTreasuryState)
     .catch(() => {});
+  refreshMissions();
 })();

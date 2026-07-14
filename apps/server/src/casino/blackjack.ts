@@ -223,6 +223,7 @@ export class BlackjackService {
         result: hand.result ?? null
       })),
       activeHand: round.activeHand,
+      payout: round.phase === "settled" ? (round.settlements ?? []).reduce((total, settlement) => total + settlement.payout, 0) : null,
       wallet: round.wallet ?? null
     };
   }

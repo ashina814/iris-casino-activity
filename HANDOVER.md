@@ -2,48 +2,45 @@
 
 最終更新: 2026-07-14
 
-## 本番構成
+## 本番環境
 
 - 公開URL: `https://iris-casino.duckdns.org`
-- Caddy: HTTPS終端後、`127.0.0.1:3100` のActivityコンテナへリバースプロキシ
-- Activityコンテナ: 内部ポート `3000`
-- Dockerボリューム: `iris-casino-data`。ゲームラウンドとActivity進捗を保持するため削除しない。
-- ActivityモードではHelmetのiframe制約をDiscordドメイン向けに緩和済み。
+- Caddy が HTTPS を終端し、`127.0.0.1:3100` の Activity コンテナへリバースプロキシする。
+- コンテナ内部のアプリケーションはポート `3000` で待ち受ける。
+- 永続データは Docker ボリューム `iris-casino-data` に保存される。コンテナを作り直しても、ボリュームを削除しない限り失われない。
+- `DISCORD_ACTIVITY_MODE=true` のときだけ、Helmet の iframe 制限を Discord 用に緩和している。`X-Frame-Options` は出力せず、CSP の `frame-ancestors` に Discord のドメインを許可する。
 
-## RIS連携
+## RIS 連携
 
-通貨の唯一の正本は `ashina814/iris-economy-bot` のRIS台帳。
+残高の正本は `ashina814/iris-economy-bot` の RIS ウォレットだけである。画面に残る Lux Noctis のコイン表記は、RIS 残高を表示するための UI 状態であり、別通貨ではない。
 
-- ゲームのベット・精算: 既存の予約/精算API
-- 日次ギフト: RISクレジット。予備金・Crown NotesはActivityサーバーの進捗状態で保持
-- Treasury: RISデビットまたはCrown Notes。購入IDで冪等化済み
-- 救済金: RIS残高が100未満のとき2,500まで一度だけ補填。サーバー側で判定・記録
-- Treasuryの通信失敗後の再試行: ブラウザセッションに購入IDを残し、再読込後も同じRIS取引を再利用
+- 各ゲームのベット、払戻し、予約、精算は既存のゲーム API と RIS 連携で処理する。
+- 日次ギフトは RIS クレジット、連続ログインと Crown Notes は Activity サーバーの永続状態で管理する。
+- Treasury は RIS デビットまたは Crown Notes で決済する。購入IDにより再試行時も二重決済しない。
+- Palace Relief は RIS 残高が100未満のとき、一度だけ2,500 RISまで補充する。
+- 日替わりミッションはゲームサーバーが信頼済みの精算結果から進捗を記録し、報酬を RIS へクレジットする。ラウンドIDと Bot 側の取引IDの両方で重複報酬を防止する。
 
-Activityの `ActivityEconomyService` は以下にある。
+Activity 側の経済処理は `apps/server/src/services/activity-economy.ts` にある。Bot 側は `POST /internal/v1/activity/adjustments` を提供し、日次ギフト、Treasury、Relief、ミッションの調整を決定的な取引IDで処理する。
 
-- `apps/server/src/services/activity-economy.ts`
+## UI と同期
 
-Bot側には `POST /internal/v1/activity/adjustments` が必要。daily、treasury、reliefの調整理由を受け付け、取引IDで冪等に処理する。
+- 最初の画面は Lux Noctis 本来の導入画面のまま表示する。
+- Discord 認証後は `postMessage` で本人情報を渡し、同じ導入画面から `autostart=1` でロビーへ遷移する。
+- Party は Discord セッションの本人性を使って参加者、在席、リアクション、フィードをサーバー同期する。
+- ミッションの見た目、ゲーム記録、実績、秘宝、金庫などの Lux UI は残す。RIS 残高へ影響する経済処理だけは、ブラウザ保存ではなくサーバーと Bot を正とする。
 
-## UXと同期
+## 現在のコミット
 
-- 最初の画面はReact製の別入口ではなく、Lux Noctis本来の入口を直接表示する。
-- Lux入口からの認証要求だけを同一オリジンの`postMessage`で受信し、認証後は同一画面を`autostart=1`で再読込する。
-- PartyはDiscordセッションの本人性で参加者を確定し、在席・リアクション・フィードをサーバー同期する。
-- Party CrownのRIS報酬、ミッション、Eclipse Vaultは未移行。クライアント申告での加算を許可せず、サーバー確定ラウンドから発火させる必要がある。
+- `b9d6bd9` Treasury を RIS 決済へ移行
+- `a5cb446` Palace Relief を RIS へ移行
+- `2e94741` Lux の導入画面を Activity の開始画面に統一
+- `0fb664e` 導入画面の認証連携テスト
+- `ac4ea1c` 認証済み Party 同期
+- `6d48663` 本番引継ぎ文書
 
-## 現在のActivityコミット
+## VPS 反映手順
 
-- `b9d6bd9` TreasuryをRIS精算へ移行
-- `a5cb446` 救済金をRISへ移行、Treasury再試行保護
-- `2e94741` Lux入口へ統一
-- `0fb664e` 入口認証の統合テスト
-- `ac4ea1c` 認証済みParty同期
-
-## VPS更新
-
-VPS上のActivityリポジトリで実施する。
+Activity リポジトリで実行する。
 
 ```bash
 git pull --ff-only origin main
@@ -52,19 +49,18 @@ docker compose ps
 curl -fsS https://iris-casino.duckdns.org/api/health
 ```
 
-正常時はhealth APIが `{"ok":true,"service":"iris-casino-activity","version":"0.1.0"}` を返す。
+正常時の health API は `{"ok":true,"service":"iris-casino-activity","version":"0.1.0"}` を返す。Bot の `main` も Activity より先に更新し、`IRIS_ECONOMY_API_BASE_URL` と `IRIS_ECONOMY_API_KEY` が正しい Bot を指していることを確認する。
 
-BotもActivityより先に、RIS調整APIを含むコミットを本番Botへ反映して再起動する。Activityを先に更新すると、日次ギフト・Treasury・救済金が `economy_unavailable` になる。
+## 本番確認
 
-## 反映後の確認
+1. Discord から Activity を開き、導入画面と自動入場が自然につながること。
+2. `/api/wallet` が RIS 残高を返すこと。
+3. 代表ゲームでベット、払戻し、再読み込み後の残高一致を確認すること。
+4. 日次ギフト、Treasury、Palace Relief、ミッションをそれぞれ一度実行し、Bot の取引ログと残高が一度だけ変化すること。
+5. 同じゲーム操作を通信再試行しても、ミッション報酬と Treasury 決済が重複しないこと。
+6. 2人以上で Party room URL を開き、在席、リアクション、フィードが同期すること。
 
-1. DiscordからActivityを開き、Luxの入口が最初から表示される。
-2. 認証後も同じLux画面のまま自動入場する。
-3. `/api/wallet` がRIS残高を返す。
-4. 日次ギフト、TreasuryのRIS支払い、低残高救済を少額テストアカウントで確認する。
-5. 同じTreasury操作を通信失敗後に再試行し、RIS取引が一度だけであることをBotの取引ログで確認する。
-6. 2人以上で同じParty room URLを開き、参加者・リアクション・フィードが同期する。
+## 残る運用確認
 
-## 検証
-
-Activityは `npm.cmd run check` でlint、型検査、全テスト、本番ビルドを実行する。
+- 進行中ラウンドの最中に Activity コンテナを再起動し、ゲーム固有の予約・精算が期待どおり復旧するかを本番前に確認する。
+- Party Crown、Eclipse Vault などの Lux 内の追加報酬を RIS 化する場合は、クライアント起点の報酬請求を追加せず、サーバー側で達成条件を検証する API を追加する。

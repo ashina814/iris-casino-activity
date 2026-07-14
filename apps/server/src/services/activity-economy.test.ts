@@ -44,6 +44,16 @@ describe("ActivityEconomyService missions", () => {
     expect(JSON.parse(String(adjustment?.[1]?.body))).toMatchObject({ amount: 700, reason: "mystery" });
   });
 
+  it("tracks season XP from trusted rounds and settles a tier reward once", async () => {
+    const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 5530, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    for (let index = 0; index < 5; index += 1) await service.recordMissionRound(user, { id: `season-${index}`, wager: 40_000, payout: 40_001 });
+
+    expect(await service.seasonStatus(user)).toMatchObject({ xp: 510, tier: 3, claimed: [] });
+    expect(await service.claimSeason(user, 1)).toMatchObject({ tier: 1, reward: { type: "coins", amount: 530 }, alreadyClaimed: false, wallet: 5530 });
+    expect(await service.claimSeason(user, 1)).toMatchObject({ alreadyClaimed: true });
+  });
+
   it("awards a server-recorded daily mission once even when its round is retried", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
       if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 5600, currency: "Ris" }), { headers: { "content-type": "application/json" } });

@@ -13,6 +13,7 @@
   let nightEventRefresh = 0;
   let mysteryOffer = null;
   let mysteryBusy = false;
+  let seasonRefresh = 0;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -133,6 +134,18 @@
     mysteryOffer = payload.mystery.offer;
     if (Number.isInteger(payload.mystery.wallet) && payload.mystery.wallet >= 0) window.__IRIS_SET_WALLET?.(payload.mystery.wallet);
     if (openWhenAvailable && mysteryOffer && !mysteryOffer.claimed) app.ascension?.openMystery?.();
+  }
+
+  async function refreshSeason() {
+    const refresh = ++seasonRefresh;
+    const response = await fetch("/api/economy/season", { credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (refresh !== seasonRefresh || !response.ok || !payload?.ok || !payload.season || !app.ascension) return;
+    const season = payload.season;
+    app.ascension.data.season = { ...app.ascension.data.season, id: season.id, xp: season.xp, claimed: Object.fromEntries((season.claimed || []).map((tier) => [tier, true])) };
+    if (Number.isInteger(season.wallet) && season.wallet >= 0) window.__IRIS_SET_WALLET?.(season.wallet);
+    app.profile.save();
+    app.ascension.updateAll();
   }
 
   function applyVault(vault) {
@@ -342,6 +355,7 @@
     refreshMissions();
     void refreshWeekly();
     void refreshMystery(true);
+    void refreshSeason();
     refreshVault();
     refreshNightEvent();
     return result;
@@ -401,6 +415,32 @@
     this.updateAll();
   };
   if (app.ascension) {
+    app.ascension.addSeasonXp = function () {};
+    app.ascension.claimSeason = async function (tier) {
+      if (this.data.season.claimed[tier]) return;
+      const response = await fetch(`/api/economy/season/${encodeURIComponent(tier)}/claim`, { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.season || payload.season.alreadyClaimed) {
+        void refreshSeason();
+        return;
+      }
+      const reward = payload.season.reward;
+      this.data.season.claimed[tier] = Date.now();
+      if (reward.type === "coins") window.__IRIS_SET_WALLET?.(payload.season.wallet);
+      if (reward.type === "dust") this.addStardust(reward.amount, false);
+      if (reward.type === "tokens") this.data.eventTokens += reward.amount;
+      if (reward.type === "shards") this.data.crownShards += reward.amount;
+      if (reward.type === "capsule") this.data.capsules += reward.amount;
+      this.data.stats.seasonClaims += 1;
+      this.app.profile.save();
+      this.app.audio.play("chime");
+      this.app.celebration.burst(.3);
+      this.renderAscension("chronicle");
+      this.updateAll();
+    };
+    app.ascension.claimAllSeason = async function () {
+      for (let tier = 1; tier <= this.seasonTier(); tier += 1) if (!this.data.season.claimed[tier]) await this.claimSeason(tier);
+    };
     app.ascension.maybeMysteryDoor = function () {
       if (!this.app.activeModal) void refreshMystery(true);
     };
@@ -455,6 +495,7 @@
   refreshMissions();
   void refreshWeekly();
   void refreshMystery();
+  void refreshSeason();
   refreshVault();
   refreshNightEvent();
 })();

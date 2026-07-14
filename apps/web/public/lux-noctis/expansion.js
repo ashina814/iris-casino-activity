@@ -1210,8 +1210,7 @@
         duel.receipts ||= {};
         const paidCoins=data.reward.coins;
         duel.receipts[m.id] = {result:data.result,coins:paidCoins,requestedCoins:data.reward.coins,medals,ratingDelta,time:Date.now()};
-        const season = Math.floor((data.result==='win'?180:80) * (1 + (data.result==='win'?this.app.ascension.effect('duelSeason'):0)));
-        this.app.ascension.addSeasonXp(season);
+        if (data.season) this.app.ascension.data.season = {...this.app.ascension.data.season,id:data.season.id,xp:data.season.xp,claimed:Object.fromEntries((data.season.claimed||[]).map(tier=>[tier,true]))};
         const masteryGame = m.mode==='dice'?'sicbo':m.mode;
         this.app.ascension.addMastery(masteryGame, data.result==='win'?140:70, data.result==='win');
         this.app.profile.save();

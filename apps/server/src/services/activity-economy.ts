@@ -34,6 +34,9 @@ type ActivityProgress = {
   weekly: WeeklyProgress[];
   weeklyRounds: string[];
   mysteryOffer: MysteryOffer | null;
+  seasonId: string;
+  seasonXp: number;
+  seasonClaimed: number[];
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -42,6 +45,7 @@ type WeeklyEvent = "round" | "win" | "wager" | "variety";
 type WeeklyProgress = { id: string; event: WeeklyEvent; target: number; reward: number; progress: number; claimed: boolean; games: string[] };
 type MysteryReward = { type: "coins" | "dust" | "capsule" | "tokens"; amount: number };
 type MysteryOffer = { id: string; rewards: MysteryReward[]; claimed: boolean };
+type SeasonReward = { type: "coins" | "dust" | "tokens" | "shards" | "capsule"; amount: number };
 type NightEventId = "stardust" | "vault" | "echo" | "crown";
 export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>> };
 
@@ -166,6 +170,26 @@ export class ActivityEconomyService {
     return { offer: progress.mysteryOffer, wallet: wallet.wallet, currency: wallet.currency };
   }
 
+  async seasonStatus(user: DiscordUser) {
+    const progress = this.ensureSeason(user.id, this.progressFor(user.id));
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { id: progress.seasonId, xp: progress.seasonXp, tier: seasonTier(progress.seasonXp), claimed: progress.seasonClaimed, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async claimSeason(user: DiscordUser, tier: number) {
+    const progress = this.ensureSeason(user.id, this.progressFor(user.id));
+    if (!Number.isInteger(tier) || tier < 1 || tier > 40 || tier > seasonTier(progress.seasonXp)) throw new AppError(409, "casino_transaction_conflict", "Season reward is unavailable.");
+    const reward = seasonReward(tier);
+    if (progress.seasonClaimed.includes(tier)) return { tier, reward, alreadyClaimed: true, wallet: (await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch)).wallet, currency: "Ris" };
+    const result = reward.type === "coins"
+      ? await requestActivityAdjustment({ transactionId: `activity-season-${user.id}-${progress.seasonId}-${tier}`, discordUserId: user.id, sessionId: `season-${progress.seasonId}-${tier}`, operation: "credit", amount: reward.amount, reason: "season" }, this.options.env, this.options.fetch)
+      : await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    const next = { ...progress, seasonClaimed: [...progress.seasonClaimed, tier] };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { tier, reward, alreadyClaimed: false, wallet: result.wallet, currency: result.currency };
+  }
+
   async claimMystery(user: DiscordUser, offerId: string, index: number) {
     const progress = this.progressFor(user.id); const offer = progress.mysteryOffer;
     if (!offer || offer.id !== offerId || offer.claimed || !Number.isInteger(index) || index < 0 || index >= offer.rewards.length) throw new AppError(409, "casino_transaction_conflict", "Mystery reward is unavailable.");
@@ -268,6 +292,15 @@ export class ActivityEconomyService {
     return { amount, wallet: result.wallet, currency: result.currency };
   }
 
+  awardDuelSeason(user: DiscordUser, result: "win" | "loss" | "tie") {
+    let progress = this.ensureSeason(user.id, this.progressFor(user.id));
+    const gain = result === "win" ? 180 : 80;
+    progress = { ...progress, seasonXp: Math.min(9_999, progress.seasonXp + gain) };
+    this.state.users[user.id] = progress;
+    this.options.store.save(this.state);
+    return { id: progress.seasonId, xp: progress.seasonXp, tier: seasonTier(progress.seasonXp), claimed: progress.seasonClaimed };
+  }
+
   async recordMissionRound(user: DiscordUser, round: TrustedMissionRound) {
     let progress = this.ensureMissionDay(user.id, this.progressFor(user.id));
     if (progress.missionRounds.includes(round.id)) {
@@ -305,6 +338,7 @@ export class ActivityEconomyService {
     progress = this.advanceVault(nightEvent.progress, round, nightEvent.active === "vault");
     progress = this.advanceWeekly(user.id, progress, round);
     progress = this.advanceMystery(progress);
+    progress = this.advanceSeason(user.id, progress, round);
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -438,6 +472,15 @@ export class ActivityEconomyService {
     return next;
   }
 
+  private ensureSeason(discordUserId: string, progress: ActivityProgress): ActivityProgress {
+    const id = jstSeasonKey();
+    if (progress.seasonId === id) return progress;
+    const next = { ...progress, seasonId: id, seasonXp: 0, seasonClaimed: [] };
+    this.state.users[discordUserId] = next;
+    this.options.store.save(this.state);
+    return next;
+  }
+
   private advanceWeekly(discordUserId: string, progress: ActivityProgress, round: TrustedMissionRound): ActivityProgress {
     progress = this.ensureWeekly(discordUserId, progress);
     if (progress.weeklyRounds.includes(round.id)) return progress;
@@ -460,6 +503,12 @@ export class ActivityEconomyService {
     if (randomInt(10_000) >= 450) return progress;
     const rewards: MysteryReward[] = [{ type: "coins", amount: 250 + randomInt(751) }, { type: "dust", amount: 80 + randomInt(221) }, randomInt(100) < 35 ? { type: "capsule", amount: 1 } : { type: "tokens", amount: 2 + randomInt(3) }];
     return { ...progress, mysteryOffer: { id: `${Date.now()}-${randomInt(1_000_000)}`, rewards: shuffle(rewards), claimed: false } };
+  }
+
+  private advanceSeason(discordUserId: string, progress: ActivityProgress, round: TrustedMissionRound): ActivityProgress {
+    progress = this.ensureSeason(discordUserId, progress);
+    const gain = 32 + Math.floor(round.wager / 800) + (round.payout > round.wager ? 20 : 0);
+    return { ...progress, seasonXp: Math.min(9_999, progress.seasonXp + Math.max(0, gain)) };
   }
 
   private advanceVault(progress: ActivityProgress, round: TrustedMissionRound, doubled: boolean): ActivityProgress {
@@ -602,7 +651,10 @@ function normalizeProgress(value: unknown): ActivityProgress {
     weeklyId: typeof raw.weeklyId === "string" ? raw.weeklyId : "",
     weekly: normalizeWeekly(raw.weekly),
     weeklyRounds: Array.isArray(raw.weeklyRounds) ? raw.weeklyRounds.filter((id): id is string => typeof id === "string").slice(-1000) : [],
-    mysteryOffer: normalizeMysteryOffer(raw.mysteryOffer)
+    mysteryOffer: normalizeMysteryOffer(raw.mysteryOffer),
+    seasonId: typeof raw.seasonId === "string" ? raw.seasonId : "",
+    seasonXp: Math.min(9_999, safeNonNegativeInteger(raw.seasonXp)),
+    seasonClaimed: Array.isArray(raw.seasonClaimed) ? [...new Set(raw.seasonClaimed.filter((tier): tier is number => Number.isInteger(tier) && tier >= 1 && tier <= 40))] : []
   };
 }
 
@@ -631,7 +683,10 @@ function initialProgress(): ActivityProgress {
     weeklyId: "",
     weekly: [],
     weeklyRounds: [],
-    mysteryOffer: null
+    mysteryOffer: null,
+    seasonId: "",
+    seasonXp: 0,
+    seasonClaimed: []
   };
 }
 
@@ -726,6 +781,9 @@ function shuffle<T>(items: T[]): T[] {
 }
 
 function jstWeekKey(date = new Date()) { const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000); jst.setUTCDate(jst.getUTCDate() - ((jst.getUTCDay() + 6) % 7)); return `${jst.getUTCFullYear()}-${String(jst.getUTCMonth() + 1).padStart(2, "0")}-${String(jst.getUTCDate()).padStart(2, "0")}`; }
+function jstSeasonKey(date = new Date()) { const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000); return `${jst.getUTCFullYear()}-${String(jst.getUTCMonth() + 1).padStart(2, "0")}`; }
+function seasonTier(xp: number) { return Math.min(40, Math.floor(xp / 250) + 1); }
+function seasonReward(tier: number): SeasonReward { if (tier % 10 === 0) return { type: "capsule", amount: 2 }; if (tier % 5 === 0) return { type: "shards", amount: 100 + tier * 4 }; if (tier % 4 === 0) return { type: "tokens", amount: 2 }; if (tier % 3 === 0) return { type: "dust", amount: 120 + tier * 3 }; return { type: "coins", amount: 500 + tier * 30 }; }
 
 function treasuryCatalog(seals: number) {
   return [

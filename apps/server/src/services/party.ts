@@ -154,12 +154,12 @@ export class PartyService {
     return this.state(room);
   }
 
-  recordTrustedWin(userId: string, net: number) {
+  recordTrustedWin(userId: string, net: number, multiplier = 1) {
     if (!Number.isSafeInteger(net) || net <= 0) return;
     for (const room of this.rooms.values()) {
       this.prune(room);
       if (!room.players.has(userId)) continue;
-      room.crown = Math.min(100, room.crown + clamp(Math.floor(net / 2000) + 1, 1, 18));
+      room.crown = Math.min(100, room.crown + clamp(Math.floor((Math.floor(net / 2000) + 1) * Math.max(1, multiplier)), 1, 18));
       if (room.crown >= 100) {
         room.crown = 0;
         const crown: PartyCrown = { id: randomUUID(), recipients: new Set(room.players.keys()), createdAt: Date.now() };
@@ -172,7 +172,7 @@ export class PartyService {
     }
   }
 
-  recordTrustedRound(userId: string, wager: number, payout: number) {
+  recordTrustedRound(userId: string, wager: number, payout: number, modifiers: { raid?: number; masteryLevel?: number } = {}) {
     if (!Number.isSafeInteger(wager) || !Number.isSafeInteger(payout) || wager < 0 || payout < 0) return 0;
     let raidDamage = 0;
     for (const room of this.rooms.values()) {
@@ -202,7 +202,7 @@ export class PartyService {
       room.league.set(userId, entry);
       const raid = this.ensureRaid(room);
       if (raid.hp > 0) {
-        const damage = clamp(Math.max(20, Math.floor(wager * .32 + net * .12 + 8)), 1, 8_000);
+        const damage = clamp(Math.max(20, Math.floor((wager * .32 + net * .12 + Math.max(1, modifiers.masteryLevel ?? 1) * 8) * Math.max(1, modifiers.raid ?? 1))), 1, 8_000);
         raidDamage += damage;
         raid.hp = Math.max(0, raid.hp - damage);
         raid.phase = raid.hp <= raid.maxHp * .25 ? 3 : raid.hp <= raid.maxHp * .6 ? 2 : 1;

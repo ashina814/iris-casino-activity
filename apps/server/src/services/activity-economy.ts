@@ -89,6 +89,16 @@ type ActivityProgress = {
   constellationPoints: number;
   constellationMasteryPoints: number;
   mastery: Record<string, { xp: number; level: number; rounds: number; wins: number }>;
+  duelProfileMigrated: boolean;
+  duelRating: number;
+  duelMedals: number;
+  duelWins: number;
+  duelLosses: number;
+  duelTies: number;
+  duelStreak: number;
+  duelBestStreak: number;
+  duelMatches: number;
+  duelWeeklyShieldUsed: string;
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -282,6 +292,36 @@ export class ActivityEconomyService {
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     return this.publicAscension(next);
+  }
+
+  duelProfileStatus(user: DiscordUser) {
+    return this.publicDuelProfile(this.progressFor(user.id));
+  }
+
+  migrateDuelProfile(user: DiscordUser, source: { rating: number; medals: number; wins: number; losses: number; ties: number; streak: number; bestStreak: number; matches: number; weeklyShieldUsed: string }) {
+    const progress = this.progressFor(user.id);
+    if (progress.duelProfileMigrated) return this.publicDuelProfile(progress);
+    const next = {
+      ...progress,
+      duelProfileMigrated: true,
+      duelRating: Math.max(500, Math.min(10_000, safeNonNegativeInteger(source.rating, 1_000))),
+      duelMedals: safeNonNegativeInteger(source.medals),
+      duelWins: safeNonNegativeInteger(source.wins),
+      duelLosses: safeNonNegativeInteger(source.losses),
+      duelTies: safeNonNegativeInteger(source.ties),
+      duelStreak: safeNonNegativeInteger(source.streak),
+      duelBestStreak: safeNonNegativeInteger(source.bestStreak),
+      duelMatches: safeNonNegativeInteger(source.matches),
+      duelWeeklyShieldUsed: typeof source.weeklyShieldUsed === "string" && /^\d{4}-\d{2}-\d{2}$/.test(source.weeklyShieldUsed) ? source.weeklyShieldUsed : ""
+    };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return this.publicDuelProfile(next);
+  }
+
+  partyModifiers(user: DiscordUser, game?: string) {
+    const progress = this.progressFor(user.id);
+    return { party: 1 + this.constellationEffect(progress, "party"), partyReward: 1 + this.constellationEffect(progress, "partyReward"), raid: 1 + this.constellationEffect(progress, "raid"), masteryLevel: game && masteryGames.includes(game) ? (progress.mastery[game]?.level ?? 1) : 1 };
   }
 
   async mysteryStatus(user: DiscordUser) {
@@ -649,18 +689,19 @@ export class ActivityEconomyService {
       const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
       return { amount: 0, alreadyClaimed: true, wallet: wallet.wallet, currency: wallet.currency };
     }
+    const amount = Math.floor(500 * (1 + this.constellationEffect(progress, "partyReward")));
     const result = await requestActivityAdjustment({
       transactionId: `activity-party-${user.id}-${crownId}`,
       discordUserId: user.id,
       sessionId: `party-${crownId}`,
       operation: "credit",
-      amount: 500,
+      amount,
       reason: "party"
     }, this.options.env, this.options.fetch);
     const next = { ...progress, partyClaims: [...progress.partyClaims, crownId].slice(-500) };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
-    return { amount: 500, alreadyClaimed: false, wallet: result.wallet, currency: result.currency };
+    return { amount, alreadyClaimed: false, wallet: result.wallet, currency: result.currency };
   }
 
   async claimRaid(user: DiscordUser, raidId: string) {
@@ -684,40 +725,69 @@ export class ActivityEconomyService {
     return { amount: 3_000, dust, capsules: 1, alreadyClaimed: false, collection: this.publicCollection(next), wallet: result.wallet, currency: result.currency };
   }
 
-  async claimDuel(user: DiscordUser, duelId: string, amount: number) {
-    const progress = this.progressFor(user.id);
+  async claimDuel(user: DiscordUser, duelId: string, amount: number, result?: "win" | "loss" | "tie", mode?: string) {
+    let progress = this.progressFor(user.id);
     if (progress.duelClaims.includes(duelId)) {
       const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-      return { amount: 0, alreadyClaimed: true, wallet: wallet.wallet, currency: wallet.currency };
+      return { amount: 0, medals: 0, alreadyClaimed: true, wallet: wallet.wallet, currency: wallet.currency, duel: this.publicDuelProfile(progress), season: null };
     }
-    if (amount <= 0) {
-      const next = { ...progress, duelClaims: [...progress.duelClaims, duelId].slice(-500) };
-      this.state.users[user.id] = next;
-      this.options.store.save(this.state);
-      const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-      return { amount: 0, alreadyClaimed: false, wallet: wallet.wallet, currency: wallet.currency };
-    }
-    const result = await requestActivityAdjustment({ transactionId: `activity-pvp-${user.id}-${duelId}`, discordUserId: user.id, sessionId: `pvp-${duelId}`, operation: "credit", amount, reason: "pvp" }, this.options.env, this.options.fetch);
-    const next = { ...progress, duelClaims: [...progress.duelClaims, duelId].slice(-500) };
-    this.state.users[user.id] = next;
+    const settledResult = result ?? (amount > 0 ? "win" : "loss");
+    const wallet = amount > 0
+      ? await requestActivityAdjustment({ transactionId: `activity-pvp-${user.id}-${duelId}`, discordUserId: user.id, sessionId: `pvp-${duelId}`, operation: "credit", amount, reason: "pvp" }, this.options.env, this.options.fetch)
+      : await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    const duel = this.advanceDuelProfile(progress, settledResult);
+    progress = duel.progress;
+    let season: { progress: ActivityProgress; public: ReturnType<ActivityEconomyService["awardDuelSeason"]> } | null = null;
+    if (result) season = this.advanceDuelSeason(user.id, progress, settledResult, mode);
+    if (season) progress = season.progress;
+    progress = { ...progress, duelClaims: [...progress.duelClaims, duelId].slice(-500) };
+    this.state.users[user.id] = progress;
     this.options.store.save(this.state);
-    return { amount, alreadyClaimed: false, wallet: result.wallet, currency: result.currency };
+    return { amount, medals: duel.medals, alreadyClaimed: false, wallet: wallet.wallet, currency: wallet.currency, duel: this.publicDuelProfile(progress), season: season ? season.public : null };
+  }
+
+  private advanceDuelProfile(progress: ActivityProgress, result: "win" | "loss" | "tie") {
+    const medals = Math.floor((result === "win" ? 5 : result === "tie" ? 2 : 1) * (1 + this.constellationEffect(progress, "duelMedal")));
+    const currentWeek = jstWeekKey();
+    const shield = result === "loss" && this.constellationEffect(progress, "weeklyShield") > 0 && progress.duelWeeklyShieldUsed !== currentWeek;
+    const ratingDelta = result === "win" ? 25 : result === "loss" ? shield ? 0 : -Math.floor(18 * (1 - this.constellationEffect(progress, "ratingGuard"))) : 2;
+    const streak = result === "win" ? progress.duelStreak + 1 : 0;
+    return {
+      medals,
+      progress: {
+        ...progress,
+        duelRating: Math.max(500, progress.duelRating + ratingDelta),
+        duelMedals: progress.duelMedals + medals,
+        duelWins: progress.duelWins + (result === "win" ? 1 : 0),
+        duelLosses: progress.duelLosses + (result === "loss" ? 1 : 0),
+        duelTies: progress.duelTies + (result === "tie" ? 1 : 0),
+        duelStreak: streak,
+        duelBestStreak: Math.max(progress.duelBestStreak, streak),
+        duelMatches: progress.duelMatches + 1,
+        duelWeeklyShieldUsed: shield ? currentWeek : progress.duelWeeklyShieldUsed
+      }
+    };
+  }
+
+  private advanceDuelSeason(userId: string, progress: ActivityProgress, result: "win" | "loss" | "tie", mode?: string) {
+    const season = this.ensureSeason(userId, progress);
+    const gain = result === "win" ? Math.floor(180 * (1 + this.constellationEffect(season, "duelSeason"))) : 80;
+    let next = { ...season, seasonXp: Math.min(9_999, season.seasonXp + gain) };
+    if (result === "win") next = this.advanceWeeklyEvent(userId, next, "duelWin", 1);
+    const game = mode === "dice" ? "sicbo" : mode;
+    if (game && masteryGames.includes(game)) {
+      const mastery = this.advanceMastery(next, { id: `duel-${game}-${Date.now()}`, game, wager: 0, payout: result === "win" ? 1 : 0, masteryXp: result === "win" ? 140 : 70 });
+      next = mastery.progress;
+      if (mastery.levels) next = this.advanceWeeklyEvent(userId, next, "masteryLevel", mastery.levels);
+    }
+    return { progress: next, public: { id: next.seasonId, xp: next.seasonXp, tier: seasonTier(next.seasonXp), claimed: next.seasonClaimed, ascension: this.publicAscension(next) } };
   }
 
   awardDuelSeason(user: DiscordUser, result: "win" | "loss" | "tie", mode?: string) {
-    let progress = this.ensureSeason(user.id, this.progressFor(user.id));
-    const gain = result === "win" ? Math.floor(180 * (1 + this.constellationEffect(progress, "duelSeason"))) : 80;
-    progress = { ...progress, seasonXp: Math.min(9_999, progress.seasonXp + gain) };
-    if (result === "win") progress = this.advanceWeeklyEvent(user.id, progress, "duelWin", 1);
-    const game = mode === "dice" ? "sicbo" : mode;
-    if (game && masteryGames.includes(game)) {
-      const mastery = this.advanceMastery(progress, { id: `duel-${game}-${Date.now()}`, game, wager: 0, payout: result === "win" ? 1 : 0, masteryXp: result === "win" ? 140 : 70 });
-      progress = mastery.progress;
-      if (mastery.levels) progress = this.advanceWeeklyEvent(user.id, progress, "masteryLevel", mastery.levels);
-    }
-    this.state.users[user.id] = progress;
+    const advanced = this.advanceDuelSeason(user.id, this.progressFor(user.id), result, mode);
+    this.state.users[user.id] = advanced.progress;
     this.options.store.save(this.state);
-    return { id: progress.seasonId, xp: progress.seasonXp, tier: seasonTier(progress.seasonXp), claimed: progress.seasonClaimed, ascension: this.publicAscension(progress) };
+    return advanced.public;
   }
 
   async recordMissionRound(user: DiscordUser, round: TrustedMissionRound) {
@@ -1129,6 +1199,10 @@ export class ActivityEconomyService {
     return { migrated: progress.ascensionMigrated, mastery: progress.mastery, constellation: { nodes: progress.constellationNodes, points: progress.constellationPoints, earnedFromMastery: progress.constellationMasteryPoints } };
   }
 
+  private publicDuelProfile(progress: ActivityProgress) {
+    return { migrated: progress.duelProfileMigrated, rating: progress.duelRating, medals: progress.duelMedals, wins: progress.duelWins, losses: progress.duelLosses, ties: progress.duelTies, streak: progress.duelStreak, bestStreak: progress.duelBestStreak, matches: progress.duelMatches, weeklyShieldUsed: progress.duelWeeklyShieldUsed };
+  }
+
   private publicArtifacts(progress: ActivityProgress) {
     return { migrated: progress.artifactMigrated, owned: progress.artifactOwned, claimed: progress.artifactClaims, keys: progress.artifactKeys, fragments: progress.artifactFragments, opened: progress.artifactOpened, duplicates: progress.artifactDuplicates, shards: progress.artifactShards };
   }
@@ -1351,7 +1425,17 @@ function normalizeProgress(value: unknown): ActivityProgress {
     constellationNodes: Array.isArray(raw.constellationNodes) ? [...new Set(raw.constellationNodes.filter((id): id is string => typeof id === "string" && constellationNodes.some((node) => node.id === id)))] : [],
     constellationPoints: Math.min(100, safeNonNegativeInteger(raw.constellationPoints)),
     constellationMasteryPoints: safeNonNegativeInteger(raw.constellationMasteryPoints),
-    mastery: normalizeMastery(raw.mastery)
+    mastery: normalizeMastery(raw.mastery),
+    duelProfileMigrated: raw.duelProfileMigrated === true,
+    duelRating: Math.max(500, Math.min(10_000, safeNonNegativeInteger(raw.duelRating, 1_000))),
+    duelMedals: safeNonNegativeInteger(raw.duelMedals),
+    duelWins: safeNonNegativeInteger(raw.duelWins),
+    duelLosses: safeNonNegativeInteger(raw.duelLosses),
+    duelTies: safeNonNegativeInteger(raw.duelTies),
+    duelStreak: safeNonNegativeInteger(raw.duelStreak),
+    duelBestStreak: safeNonNegativeInteger(raw.duelBestStreak),
+    duelMatches: safeNonNegativeInteger(raw.duelMatches),
+    duelWeeklyShieldUsed: typeof raw.duelWeeklyShieldUsed === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.duelWeeklyShieldUsed) ? raw.duelWeeklyShieldUsed : ""
   };
 }
 
@@ -1435,7 +1519,17 @@ function initialProgress(): ActivityProgress {
     constellationNodes: [],
     constellationPoints: 0,
     constellationMasteryPoints: 0,
-    mastery: {}
+    mastery: {},
+    duelProfileMigrated: false,
+    duelRating: 1_000,
+    duelMedals: 0,
+    duelWins: 0,
+    duelLosses: 0,
+    duelTies: 0,
+    duelStreak: 0,
+    duelBestStreak: 0,
+    duelMatches: 0,
+    duelWeeklyShieldUsed: ""
   };
 }
 

@@ -170,6 +170,39 @@
     applyAscension(payload.ascension);
   }
 
+  function applyDuelProfile(duel) {
+    if (!duel || !app.ascension) return;
+    const local = app.ascension.data.duel;
+    Object.assign(local, {
+      rating: duel.rating,
+      medals: duel.medals,
+      wins: duel.wins,
+      losses: duel.losses,
+      ties: duel.ties,
+      streak: duel.streak,
+      bestStreak: duel.bestStreak,
+      matches: duel.matches,
+      weeklyShieldUsed: duel.weeklyShieldUsed
+    });
+    app.profile.save();
+    app.ascension.updateAll();
+  }
+
+  async function refreshDuelProfile() {
+    let response = await fetch("/api/economy/duel-profile", { credentials: "include" });
+    let payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !payload.duel || !app.ascension) return;
+    if (!payload.duel.migrated) {
+      const duel = app.ascension.data.duel || {};
+      response = await fetch("/api/economy/duel-profile/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({
+        rating: Number(duel.rating || 1000), medals: Number(duel.medals || 0), wins: Number(duel.wins || 0), losses: Number(duel.losses || 0), ties: Number(duel.ties || 0), streak: Number(duel.streak || 0), bestStreak: Number(duel.bestStreak || 0), matches: Number(duel.matches || 0), weeklyShieldUsed: String(duel.weeklyShieldUsed || "")
+      }) });
+      payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.duel) return;
+    }
+    applyDuelProfile(payload.duel);
+  }
+
   async function refreshMystery(openWhenAvailable = false) {
     const response = await fetch("/api/economy/mystery", { credentials: "include" });
     const payload = await response.json().catch(() => null);
@@ -925,6 +958,7 @@
   refreshMissions();
   void refreshWeekly();
   void refreshAscension();
+  void refreshDuelProfile();
   void refreshMystery();
   void refreshSeason();
   void refreshCircuit();

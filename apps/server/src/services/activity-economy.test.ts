@@ -258,7 +258,7 @@ describe("ActivityEconomyService missions", () => {
   it("settles each Crown Duel reward exactly once", async () => {
     const fetchMock = vi.fn(async (url: string | URL) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 5500, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
     const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
-    expect(await service.claimDuel(user, "duel-test", 500)).toMatchObject({ amount: 500, alreadyClaimed: false, wallet: 5500 });
+    expect(await service.claimDuel(user, "duel-test", 500, "win", "dice")).toMatchObject({ amount: 500, medals: 5, alreadyClaimed: false, wallet: 5500, duel: { rating: 1025, wins: 1, matches: 1 }, season: { xp: 180, ascension: { mastery: { sicbo: { xp: 140, rounds: 1, wins: 1 } } } } });
     expect(await service.claimDuel(user, "duel-test", 500)).toMatchObject({ amount: 0, alreadyClaimed: true, wallet: 5000 });
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("adjustments"))).toHaveLength(1);
   });

@@ -1217,6 +1217,7 @@
           for (const [game, mastery] of Object.entries(ascension.mastery || {})) if (this.app.ascension.data.mastery[game]) this.app.ascension.data.mastery[game] = {...this.app.ascension.data.mastery[game],...mastery};
           this.app.ascension.data.constellation = {...this.app.ascension.data.constellation,nodes:Object.fromEntries((ascension.constellation?.nodes||[]).map(id=>[id,this.app.ascension.data.constellation.nodes[id]||Date.now()])),points:ascension.constellation?.points??this.app.ascension.data.constellation.points,earnedFromMastery:ascension.constellation?.earnedFromMastery??this.app.ascension.data.constellation.earnedFromMastery};
         } else this.app.ascension.addMastery(masteryGame, data.result==='win'?140:70, data.result==='win');
+        if (data.duel) Object.assign(duel, data.duel);
         this.app.profile.save();
         this.app.ascension.updateAll();
         const rewardEl = $('#duelRewardState');

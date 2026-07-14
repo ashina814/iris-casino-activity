@@ -87,12 +87,25 @@ describe("ActivityEconomyService missions", () => {
     await expect(service.claimAlbum(user, "nocturne")).rejects.toMatchObject({ code: "casino_transaction_conflict" });
   });
 
-  it("merges collection items earned after the initial migration", async () => {
+  it("does not accept collection ownership changes after the initial migration", async () => {
     const store = new MemoryStore();
     store.save({ users: { [user.id]: { collectionMigrated: true, collectionOwned: ["nocturne_avatar"], albumClaims: [] } } });
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
     const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
-    expect((await service.migrateAlbumCollection(user, ["nocturne_frame"])).owned).toEqual(["nocturne_avatar", "nocturne_frame"]);
+    expect((await service.migrateAlbumCollection(user, ["nocturne_frame"], { capsules: 0, dust: 0, shards: 0, opened: 0, duplicates: 0 })).owned).toEqual(["nocturne_avatar"]);
+  });
+
+  it("opens and crafts collection items from server-owned resources", async () => {
+    const store = new MemoryStore();
+    store.save({ users: { [user.id]: { collectionMigrated: true, collectionCapsules: 1, collectionDust: 0, collectionShards: 500, collectionOwned: [], albumClaims: [] } } });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+    const capsule = await service.openCollectionCapsule(user);
+    expect(capsule).toMatchObject({ duplicate: false, collection: { capsules: 0, opened: 1 } });
+    expect(capsule.collection.owned).toContain(capsule.item.id);
+    const crafted = await service.craftCollectionLegendary(user);
+    expect(crafted.collection.shards).toBe(0);
+    expect(["legendary", "mythic"]).toContain(crafted.item.rarity);
   });
 
   it("opens a server-owned Sovereign Chest through a single RIS adjustment", async () => {

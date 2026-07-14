@@ -197,7 +197,8 @@
     let payload = await response.json().catch(() => null);
     if (refresh !== albumRefresh || !response.ok || !payload?.ok || !payload.albums || !app.ascension) return;
     if (!payload.albums.migrated) {
-      response = await fetch("/api/economy/albums/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ owned: Object.keys(app.ascension.data.collection.owned || {}) }) });
+      const collection = app.ascension.data.collection || {};
+      response = await fetch("/api/economy/albums/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ owned: Object.keys(collection.owned || {}), capsules: app.ascension.data.capsules || 0, dust: app.ascension.data.stardust || 0, shards: app.ascension.data.crownShards || 0, opened: collection.opened || 0, duplicates: collection.duplicates || 0 }) });
       payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok || !payload.albums) return;
     }
@@ -206,7 +207,13 @@
 
   function applyAlbums(albums) {
     if (!albums || !app.ascension) return;
+    app.ascension.data.collection.owned = Object.fromEntries((albums.owned || []).map((id) => [id, Date.now()]));
     for (const series of albums.claimed || []) app.ascension.data.collection.albums[series] = app.ascension.data.collection.albums[series] || Date.now();
+    if (Number.isInteger(albums.capsules)) app.ascension.data.capsules = albums.capsules;
+    if (Number.isInteger(albums.dust)) app.ascension.data.stardust = albums.dust;
+    if (Number.isInteger(albums.shards)) app.ascension.data.crownShards = albums.shards;
+    if (Number.isInteger(albums.opened)) app.ascension.data.collection.opened = albums.opened;
+    if (Number.isInteger(albums.duplicates)) app.ascension.data.collection.duplicates = albums.duplicates;
     if (Number.isInteger(albums.wallet) && albums.wallet >= 0) window.__IRIS_SET_WALLET?.(albums.wallet);
     app.profile.save();
   }
@@ -571,9 +578,33 @@
     app.ascension.claimAllSeason = async function () {
       for (let tier = 1; tier <= this.seasonTier(); tier += 1) if (!this.data.season.claimed[tier]) await this.claimSeason(tier);
     };
+    app.ascension.openCapsule = async function () {
+      const response = await fetch("/api/economy/collection/open", { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.drop) { void refreshAlbums(); return; }
+      const drop = payload.drop;
+      applyAlbums(drop.collection);
+      this.lastDrop = { item: drop.item, duplicate: drop.duplicate, shards: drop.shards };
+      this.app.profile.save();
+      this.app.audio.play(drop.duplicate ? "chip" : "bigwin");
+      this.app.celebration.burst(drop.duplicate ? .25 : .55);
+      this.renderCollection("capsule");
+      this.updateAll();
+    };
+    app.ascension.craftLegendary = async function () {
+      const response = await fetch("/api/economy/collection/craft", { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.drop) { void refreshAlbums(); return; }
+      const drop = payload.drop;
+      applyAlbums(drop.collection);
+      this.lastDrop = { item: drop.item, duplicate: false, shards: 0 };
+      this.app.profile.save();
+      this.app.audio.play("bigwin");
+      this.app.celebration.burst(.8);
+      this.renderCollection("craft");
+      this.updateAll();
+    };
     app.ascension.claimAlbum = async function (series) {
-      const syncResponse = await fetch("/api/economy/albums/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ owned: Object.keys(this.data.collection.owned || {}) }) });
-      if (!syncResponse.ok) return;
       const response = await fetch(`/api/economy/albums/${encodeURIComponent(series)}/claim`, { method: "POST", credentials: "include" });
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok || !payload.album) {
@@ -582,8 +613,7 @@
       }
       const album = payload.album;
       this.data.collection.albums[series] = Date.now();
-      this.addStardust(album.dust, false);
-      this.data.crownShards += album.shards;
+      applyAlbums(album.collection);
       window.__IRIS_SET_WALLET?.(album.wallet);
       this.app.profile.save();
       this.app.audio.play("bigwin");

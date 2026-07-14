@@ -63,6 +63,11 @@ type ActivityProgress = {
   collectionMigrated: boolean;
   collectionOwned: string[];
   albumClaims: string[];
+  collectionCapsules: number;
+  collectionDust: number;
+  collectionShards: number;
+  collectionOpened: number;
+  collectionDuplicates: number;
   sovereignMigrated: boolean;
   sovereignMarks: number;
   sovereignChests: number;
@@ -113,6 +118,8 @@ const odysseyBoons: OdysseyBoon[] = ["life", "coins", "key", "shield", "fame", "
 const collectionSeries = ["nocturne", "aurora", "crimson", "celestial", "obsidian", "eclipse", "lunar", "infernal", "verdant", "royal", "void", "solar"];
 const collectionTypes = ["avatar", "frame", "chip", "back", "aura", "emote"];
 const collectionItemIds = collectionSeries.flatMap((series) => collectionTypes.map((type) => `${series}_${type}`));
+type CollectionRarity = "common" | "rare" | "epic" | "legendary" | "mythic";
+const collectionDuplicateShards: Record<CollectionRarity, number> = { common: 8, rare: 18, epic: 45, legendary: 100, mythic: 280 };
 const artifactSets = ["eclipse", "seraph", "dragon", "oracle", "obsidian", "velvet", "cosmos", "jester"];
 const artifactItemIds = artifactSets.flatMap((set) => Array.from({ length: 6 }, (_, index) => `${set}-${index}`));
 
@@ -150,7 +157,7 @@ export class ActivityEconomyService {
   private readonly state: ActivityProgressState;
 
   constructor(private readonly options: { env: ServerEnv; fetch: FetchLike; store: ActivityProgressStore }) {
-    this.state = options.store.load();
+    this.state = normalizeState(options.store.load());
   }
 
   async dailyStatus(user: DiscordUser) {
@@ -228,7 +235,11 @@ export class ActivityEconomyService {
     const result = reward.type === "coins"
       ? await requestActivityAdjustment({ transactionId: `activity-season-${user.id}-${progress.seasonId}-${tier}`, discordUserId: user.id, sessionId: `season-${progress.seasonId}-${tier}`, operation: "credit", amount: reward.amount, reason: "season" }, this.options.env, this.options.fetch)
       : await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    const next = { ...progress, seasonClaimed: [...progress.seasonClaimed, tier] };
+    const next = {
+      ...progress,
+      seasonClaimed: [...progress.seasonClaimed, tier],
+      collectionCapsules: reward.type === "capsule" ? progress.collectionCapsules + reward.amount : progress.collectionCapsules
+    };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     return { tier, reward, alreadyClaimed: false, wallet: result.wallet, currency: result.currency };
@@ -320,17 +331,64 @@ export class ActivityEconomyService {
   async albumStatus(user: DiscordUser) {
     const progress = this.progressFor(user.id);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    return { migrated: progress.collectionMigrated, owned: progress.collectionOwned, claimed: progress.albumClaims, wallet: wallet.wallet, currency: wallet.currency };
+    return { ...this.publicCollection(progress), wallet: wallet.wallet, currency: wallet.currency };
   }
 
-  async migrateAlbumCollection(user: DiscordUser, owned: string[]) {
+  async migrateAlbumCollection(user: DiscordUser, owned: string[], resources: { capsules: number; dust: number; shards: number; opened: number; duplicates: number }) {
     const progress = this.progressFor(user.id);
-    const collectionOwned = [...new Set([...progress.collectionOwned, ...owned.filter((id) => collectionItemIds.includes(id))])];
-    const next = { ...progress, collectionMigrated: true, collectionOwned, albumClaims: progress.albumClaims };
+    if (progress.collectionMigrated) return this.albumStatus(user);
+    const collectionOwned = [...new Set(owned.filter((id) => collectionItemIds.includes(id)))];
+    const next = {
+      ...progress,
+      collectionMigrated: true,
+      collectionOwned,
+      collectionCapsules: resources.capsules,
+      collectionDust: resources.dust,
+      collectionShards: resources.shards,
+      collectionOpened: resources.opened,
+      collectionDuplicates: resources.duplicates
+    };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    return { migrated: true, owned: next.collectionOwned, claimed: next.albumClaims, wallet: wallet.wallet, currency: wallet.currency };
+    return { ...this.publicCollection(next), wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async openCollectionCapsule(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    if (!progress.collectionMigrated) throw new AppError(409, "casino_transaction_conflict", "Collection migration is unavailable.");
+    if (progress.collectionCapsules <= 0 && progress.collectionDust < 300) throw new AppError(409, "insufficient_funds", "Insufficient Star Dust.");
+    const rarity = rollCollectionRarity();
+    const candidates = collectionItemIds.filter((id) => collectionRarity(id) === rarity);
+    const unseen = candidates.filter((id) => !progress.collectionOwned.includes(id));
+    const itemId = (unseen.length ? unseen : candidates)[randomInt((unseen.length ? unseen : candidates).length)]!;
+    const duplicate = progress.collectionOwned.includes(itemId);
+    const shards = duplicate ? collectionDuplicateShards[rarity] : 0;
+    const next = {
+      ...progress,
+      collectionCapsules: progress.collectionCapsules > 0 ? progress.collectionCapsules - 1 : 0,
+      collectionDust: progress.collectionCapsules > 0 ? progress.collectionDust : progress.collectionDust - 300,
+      collectionShards: progress.collectionShards + shards,
+      collectionOpened: progress.collectionOpened + 1,
+      collectionDuplicates: progress.collectionDuplicates + (duplicate ? 1 : 0),
+      collectionOwned: duplicate ? progress.collectionOwned : [...progress.collectionOwned, itemId]
+    };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { collection: this.publicCollection(next), item: collectionItem(itemId), duplicate, shards };
+  }
+
+  async craftCollectionLegendary(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    if (!progress.collectionMigrated) throw new AppError(409, "casino_transaction_conflict", "Collection migration is unavailable.");
+    if (progress.collectionShards < 500) throw new AppError(409, "insufficient_funds", "Insufficient Crown Shards.");
+    const candidates = collectionItemIds.filter((id) => (collectionRarity(id) === "legendary" || collectionRarity(id) === "mythic") && !progress.collectionOwned.includes(id));
+    if (!candidates.length) throw new AppError(409, "casino_transaction_conflict", "All legendary collection items are owned.");
+    const itemId = candidates[randomInt(candidates.length)]!;
+    const next = { ...progress, collectionShards: progress.collectionShards - 500, collectionOwned: [...progress.collectionOwned, itemId] };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { collection: this.publicCollection(next), item: collectionItem(itemId) };
   }
 
   async claimAlbum(user: DiscordUser, series: string) {
@@ -339,10 +397,10 @@ export class ActivityEconomyService {
     const required = collectionTypes.map((type) => `${series}_${type}`);
     if (!required.every((id) => progress.collectionOwned.includes(id))) throw new AppError(409, "casino_transaction_conflict", "Album is incomplete.");
     const result = await requestActivityAdjustment({ transactionId: `activity-album-${user.id}-${series}`, discordUserId: user.id, sessionId: `album-${series}`, operation: "credit", amount: 3_000, reason: "album" }, this.options.env, this.options.fetch);
-    const next = { ...progress, albumClaims: [...progress.albumClaims, series] };
+    const next = { ...progress, albumClaims: [...progress.albumClaims, series], collectionDust: progress.collectionDust + 400, collectionShards: progress.collectionShards + 150 };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
-    return { series, amount: 3_000, dust: 400, shards: 150, wallet: result.wallet, currency: result.currency };
+    return { series, amount: 3_000, dust: 400, shards: 150, collection: this.publicCollection(next), wallet: result.wallet, currency: result.currency };
   }
 
   async sovereignStatus(user: DiscordUser) {
@@ -381,7 +439,8 @@ export class ActivityEconomyService {
 
   async migrateArtifacts(user: DiscordUser, owned: string[]) {
     const progress = this.progressFor(user.id);
-    const artifactOwned = [...new Set([...progress.artifactOwned, ...owned.filter((id) => artifactItemIds.includes(id))])];
+    if (progress.artifactMigrated) return this.artifactStatus(user);
+    const artifactOwned = [...new Set(owned.filter((id) => artifactItemIds.includes(id)))];
     const next = { ...progress, artifactMigrated: true, artifactOwned };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
@@ -401,11 +460,11 @@ export class ActivityEconomyService {
   }
 
   async claimMystery(user: DiscordUser, offerId: string, index: number) {
-    const progress = this.progressFor(user.id); const offer = progress.mysteryOffer;
+    let progress = this.progressFor(user.id); const offer = progress.mysteryOffer;
     if (!offer || offer.id !== offerId || offer.claimed || !Number.isInteger(index) || index < 0 || index >= offer.rewards.length) throw new AppError(409, "casino_transaction_conflict", "Mystery reward is unavailable.");
     const reward = offer.rewards[index]!;
     const result = reward.type === "coins" ? await requestActivityAdjustment({ transactionId: `activity-mystery-${user.id}-${offer.id}`, discordUserId: user.id, sessionId: `mystery-${offer.id}`, operation: "credit", amount: reward.amount, reason: "mystery" }, this.options.env, this.options.fetch) : await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    progress.mysteryOffer = { ...offer, claimed: true };
+    progress = { ...progress, mysteryOffer: { ...offer, claimed: true }, collectionCapsules: reward.type === "capsule" ? progress.collectionCapsules + reward.amount : progress.collectionCapsules };
     this.state.users[user.id] = progress; this.options.store.save(this.state);
     return { reward, wallet: result.wallet, currency: result.currency };
   }
@@ -557,6 +616,7 @@ export class ActivityEconomyService {
     }
     progress = this.advanceOdyssey(progress, round);
     progress = this.advanceSovereign(progress, round);
+    progress = this.advanceCollection(progress, round);
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -565,7 +625,7 @@ export class ActivityEconomyService {
       wallet = current.wallet;
       currency = current.currency;
     }
-    return { date: progress.missionDate, items, awarded: newlyClaimed.map((item) => ({ id: item.id, amount: item.reward })), wallet, currency };
+    return { date: progress.missionDate, items, awarded: newlyClaimed.map((item) => ({ id: item.id, amount: item.reward })), collection: this.publicCollection(progress), wallet, currency };
   }
 
   async purchaseTreasury(user: DiscordUser, purchaseId: string, itemId: TreasuryItemId, pay: TreasuryPay) {
@@ -600,6 +660,8 @@ export class ActivityEconomyService {
       ...progress,
       notes: pay === "notes" ? progress.notes - item.notes : progress.notes,
       seals: itemId === "seal" ? progress.seals + 1 : progress.seals,
+      collectionCapsules: itemId === "capsule" ? progress.collectionCapsules + 1 : progress.collectionCapsules,
+      collectionDust: itemId === "stardust" ? progress.collectionDust + 250 : progress.collectionDust,
       purchases: { ...progress.purchases, [itemId]: progress.purchases[itemId] + 1 },
       purchaseRequests: { ...progress.purchaseRequests, [purchaseId]: { itemId, pay } }
     };
@@ -826,6 +888,31 @@ export class ActivityEconomyService {
     return { active: null, bonus, progress: { ...progress, nightEventActive: next, nightEventRemaining: nightEventRounds[next], nightEventNextIn: 0 } };
   }
 
+  private advanceCollection(progress: ActivityProgress, round: TrustedMissionRound) {
+    if (!progress.collectionMigrated) return progress;
+    const won = round.payout > round.wager;
+    const dust = 6 + Math.floor(round.wager / 1_200) + (won ? 12 : 0);
+    const capsule = randomInt(10_000) < 350;
+    return {
+      ...progress,
+      collectionDust: progress.collectionDust + dust,
+      collectionCapsules: progress.collectionCapsules + (capsule ? 1 : 0)
+    };
+  }
+
+  private publicCollection(progress: ActivityProgress) {
+    return {
+      migrated: progress.collectionMigrated,
+      owned: progress.collectionOwned,
+      claimed: progress.albumClaims,
+      capsules: progress.collectionCapsules,
+      dust: progress.collectionDust,
+      shards: progress.collectionShards,
+      opened: progress.collectionOpened,
+      duplicates: progress.collectionDuplicates
+    };
+  }
+
   private publicTreasury(progress: ActivityProgress, wallet: number, currency: string) {
     return {
       wallet,
@@ -871,6 +958,31 @@ function dailyGiftAmount(wallet: number, streak: number): number {
   const base = wallet >= 250000 ? 300 : wallet >= 100000 ? 500 : 1000;
   const rescue = Math.floor(Math.max(0, Math.min(1, (30000 - wallet) / 30000)) * 1000 / 50) * 50;
   return base + rescue + Math.min(250, Math.max(0, streak) * 25);
+}
+
+function collectionRarity(itemId: string): CollectionRarity {
+  const [series, type] = itemId.split("_");
+  const rarityIndex = collectionSeries.indexOf(series ?? "") + collectionTypes.indexOf(type ?? "");
+  if (rarityIndex >= 11) return "mythic";
+  if (rarityIndex >= 8) return "legendary";
+  if (rarityIndex >= 5) return "epic";
+  if (rarityIndex >= 2) return "rare";
+  return "common";
+}
+
+function rollCollectionRarity(): CollectionRarity {
+  const roll = randomInt(100);
+  if (roll < 54) return "common";
+  if (roll < 82) return "rare";
+  if (roll < 94) return "epic";
+  if (roll < 99) return "legendary";
+  return "mythic";
+}
+
+function collectionItem(id: string) {
+  const [series, type] = id.split("_");
+  const glyphs: Record<string, string> = { avatar: "A", frame: "F", chip: "C", back: "B", aura: "U", emote: "E" };
+  return { id, name: id.replace(/_/g, " ").toUpperCase(), rarity: collectionRarity(id), tone: "#c89a5b", glyph: glyphs[type ?? ""] ?? "?", series, type };
 }
 
 async function requestActivityAdjustment(
@@ -972,8 +1084,13 @@ function normalizeProgress(value: unknown): ActivityProgress {
     odysseyBestScore: safeNonNegativeInteger(raw.odysseyBestScore),
     collectionMigrated: raw.collectionMigrated === true,
     collectionOwned: Array.isArray(raw.collectionOwned) ? [...new Set(raw.collectionOwned.filter((id): id is string => typeof id === "string" && collectionItemIds.includes(id)))] : [],
-    albumClaims: Array.isArray(raw.albumClaims) ? [...new Set(raw.albumClaims.filter((id): id is string => typeof id === "string" && collectionSeries.includes(id)))] : []
-    ,sovereignMigrated: raw.sovereignMigrated === true,
+    albumClaims: Array.isArray(raw.albumClaims) ? [...new Set(raw.albumClaims.filter((id): id is string => typeof id === "string" && collectionSeries.includes(id)))] : [],
+    collectionCapsules: safeNonNegativeInteger(raw.collectionCapsules),
+    collectionDust: safeNonNegativeInteger(raw.collectionDust),
+    collectionShards: safeNonNegativeInteger(raw.collectionShards),
+    collectionOpened: safeNonNegativeInteger(raw.collectionOpened),
+    collectionDuplicates: safeNonNegativeInteger(raw.collectionDuplicates),
+    sovereignMigrated: raw.sovereignMigrated === true,
     sovereignMarks: Math.min(9_999, safeNonNegativeInteger(raw.sovereignMarks)),
     sovereignChests: safeNonNegativeInteger(raw.sovereignChests),
     sovereignRounds: normalizeSovereignRounds(raw.sovereignRounds),
@@ -1038,6 +1155,11 @@ function initialProgress(): ActivityProgress {
     collectionMigrated: false,
     collectionOwned: [],
     albumClaims: [],
+    collectionCapsules: 0,
+    collectionDust: 0,
+    collectionShards: 0,
+    collectionOpened: 0,
+    collectionDuplicates: 0,
     sovereignMigrated: false,
     sovereignMarks: 0,
     sovereignChests: 0,

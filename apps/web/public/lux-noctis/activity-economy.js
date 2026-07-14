@@ -4,6 +4,8 @@
   const app = window.__LUX_NOCTIS__;
   if (!app) return;
 
+  app.profile.credit = function () { return 0; };
+
   let busy = false;
   let reliefBusy = false;
   let treasuryBusy = false;

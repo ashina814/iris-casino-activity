@@ -1208,7 +1208,7 @@
         duel.rating = Math.max(500,duel.rating + ratingDelta);
         duel.claimed[m.id] = Date.now();
         duel.receipts ||= {};
-        const paidCoins=this.app.profile.credit(data.reward.coins,'pvp');
+        const paidCoins=data.reward.coins;
         duel.receipts[m.id] = {result:data.result,coins:paidCoins,requestedCoins:data.reward.coins,medals,ratingDelta,time:Date.now()};
         const season = Math.floor((data.result==='win'?180:80) * (1 + (data.result==='win'?this.app.ascension.effect('duelSeason'):0)));
         this.app.ascension.addSeasonXp(season);

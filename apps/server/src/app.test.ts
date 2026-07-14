@@ -29,6 +29,7 @@ const baseEnv = {
   SCRATCH_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-scratch.json",
   LEGACY_GAMES_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-legacy.json",
   ACTIVITY_PROGRESS_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-progress.json"
+  ,DUEL_STATE_PATH: "C:\\tmp\\iris-casino-activity-test-duels.json"
 };
 
 const silentLogger = {

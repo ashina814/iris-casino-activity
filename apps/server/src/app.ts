@@ -29,6 +29,7 @@ import { createRateLimit } from "./middleware/rate-limit.js";
 import { getWalletForDiscordUser } from "./services/wallet.js";
 import { ActivityEconomyService, FileActivityProgressStore, isPurchaseId, isTreasuryItemId, isTreasuryPay } from "./services/activity-economy.js";
 import { FilePartyStore, PartyService } from "./services/party.js";
+import { DuelService, FileDuelStore } from "./services/duels.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -76,6 +77,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const legacyGames = new LegacyGamesService({ env, fetch: fetchFn, store: new FileLegacyGameStore(env.LEGACY_GAMES_STATE_PATH) });
   const activityEconomy = new ActivityEconomyService({ env, fetch: fetchFn, store: new FileActivityProgressStore(env.ACTIVITY_PROGRESS_STATE_PATH) });
   const party = new PartyService({ store: new FilePartyStore(env.PARTY_STATE_PATH) });
+  const duels = new DuelService(new FileDuelStore(env.DUEL_STATE_PATH));
   const reconciliation = Promise.all([
     roulette.reconcileAll(),
     slots.reconcileAll(),
@@ -361,6 +363,11 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!party.canClaimRaid(user.id, room.data, raidId.data)) throw new AppError(403, "unauthorized", "Raid reward is unavailable.");
     res.json({ ok: true, raid: await activityEconomy.claimRaid(user, raidId.data) });
   }));
+  app.post("/api/duel/claim", asyncRoute(async (req,res)=>{const user=getSession(req).user;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");try{const matchId=String(req.body?.matchId||"");const claimed=duels.claim(user.id,matchId);const medals=claimed.result==="win"?5:claimed.result==="tie"?2:1;const reward=claimed.alreadyClaimed?{amount:0,wallet:null,currency:"Ris"}:await activityEconomy.claimDuel(user,matchId,claimed.amount);duels.markClaim(user.id,matchId);res.json({ok:true,alreadyClaimed:claimed.alreadyClaimed,result:claimed.result,reward:{coins:reward.amount,medals},wallet:reward.wallet,currency:reward.currency})}catch(error){throw new AppError(409,"casino_transaction_conflict",error instanceof Error?error.message:"Duel reward failed.")}}));
+  app.post("/api/duel/:kind", asyncRoute(async (req,res)=>{const user=getSession(req).user;const kind=req.params.kind;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");const body=z.object({room:partyRoomSchema,mode:z.string().optional(),code:z.string().optional(),glyph:z.string().optional()}).passthrough().safeParse(req.body);if(!body.success)throw new AppError(400,"bad_request","Duel request is invalid.");try{const glyph=body.data.glyph||"♛";const match=kind==="create"?duels.create(user,body.data.room,body.data.mode||"",glyph):kind==="queue"?duels.queue(user,body.data.room,body.data.mode||"",glyph):kind==="join"?duels.join(user,body.data.room,body.data.code||"",glyph):null;if(!match)throw new Error("Invalid duel request.");res.json({ok:true,match});}catch(error){throw new AppError(409,"casino_transaction_conflict",error instanceof Error?error.message:"Duel failed.")}}));
+  app.get("/api/duel/state",(req,res)=>{const user=getSession(req).user;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");try{res.json({ok:true,match:duels.state(user.id,String(req.query.match||""))})}catch{throw new AppError(404,"not_found","Match was not found.")}});
+  app.post("/api/duel/action",asyncRoute(async(req,res)=>{const user=getSession(req).user;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");try{res.json({ok:true,match:duels.action(user.id,String(req.body?.matchId||""),req.body?.action||{})})}catch(error){throw new AppError(409,"casino_transaction_conflict",error instanceof Error?error.message:"Duel action failed.")}}));
+  app.post("/api/duel/leave",asyncRoute(async(req,res)=>{const user=getSession(req).user;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");res.json({ok:true,match:duels.leave(user.id,String(req.body?.matchId||""))})}));
 
   app.get("/api/party/events", (req, res) => {
     const user = getSession(req).user;

@@ -214,6 +214,12 @@ export class ActivityEconomyService {
     return { amount: 3_000, wallet: result.wallet, currency: result.currency };
   }
 
+  async claimDuel(user: DiscordUser, duelId: string, amount: number) {
+    if (amount <= 0) return { amount: 0, wallet: null, currency: "Ris" };
+    const result = await requestActivityAdjustment({ transactionId: `activity-pvp-${user.id}-${duelId}`, discordUserId: user.id, sessionId: `pvp-${duelId}`, operation: "credit", amount, reason: "pvp" }, this.options.env, this.options.fetch);
+    return { amount, wallet: result.wallet, currency: result.currency };
+  }
+
   async recordMissionRound(user: DiscordUser, round: TrustedMissionRound) {
     let progress = this.ensureMissionDay(user.id, this.progressFor(user.id));
     if (progress.missionRounds.includes(round.id)) {

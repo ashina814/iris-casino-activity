@@ -195,6 +195,15 @@ describe("server API", () => {
     expect(synced.body).toMatchObject({ ok: true, league: [] });
   });
 
+  it("allows Crown Duel waiting rooms only for active Party members", async () => {
+    const agent = await authenticatedAgent();
+    await agent.post("/api/duel/queue").send({ room: "duel-test", mode: "roulette" }).expect(403);
+    await agent.post("/api/party/join").send({ room: "duel-test", appearance: { level: 7, game: "Lobby", glyph: "R" } }).expect(200);
+
+    const duel = await agent.post("/api/duel/queue").send({ room: "duel-test", mode: "roulette", glyph: "R" }).expect(200);
+    expect(duel.body.match).toMatchObject({ room: "duel-test", mode: "roulette", status: "waiting" });
+  });
+
   it("converts a successful Economy API wallet response", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({ wallet: 12500, currency: "Ris" })

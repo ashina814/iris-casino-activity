@@ -18,6 +18,7 @@
   let odysseyRefresh = 0;
   let albumRefresh = 0;
   let sovereignRefresh = 0;
+  let artifactRefresh = 0;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -229,6 +230,43 @@
     app.profile.save();
     app.sovereign.updateAll();
     if (app.sovereign.tab === "chest" && app.activeModal?.id === "sovereignModal") app.sovereign.render();
+  }
+
+  async function refreshArtifacts() {
+    const refresh = ++artifactRefresh;
+    let response = await fetch("/api/economy/artifacts", { credentials: "include" });
+    let payload = await response.json().catch(() => null);
+    if (refresh !== artifactRefresh || !response.ok || !payload?.ok || !payload.artifacts || !app.eternal) return;
+    if (!payload.artifacts.migrated) {
+      response = await fetch("/api/economy/artifacts/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ owned: Object.keys(app.eternal.data.artifacts.owned || {}) }) });
+      payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.artifacts) return;
+    }
+    applyArtifacts(payload.artifacts);
+  }
+
+  function applyArtifacts(artifacts) {
+    if (!artifacts || !app.eternal) return;
+    for (const set of artifacts.claimed || []) app.eternal.data.artifacts.sets[`${set}-claimed`] = true;
+    if (Number.isInteger(artifacts.wallet) && artifacts.wallet >= 0) window.__IRIS_SET_WALLET?.(artifacts.wallet);
+    app.profile.save();
+  }
+
+  async function claimArtifactSet(eternal, set) {
+    const response = await fetch(`/api/economy/artifacts/${encodeURIComponent(set)}/claim`, { method: "POST", credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !payload.artifact) {
+      void refreshArtifacts();
+      return;
+    }
+    const artifact = payload.artifact;
+    eternal.data.artifacts.sets[`${set}-claimed`] = true;
+    eternal.data.keys += artifact.keys;
+    window.__IRIS_SET_WALLET?.(artifact.wallet);
+    eternal.app.profile.save();
+    eternal.app.audio.play("bigwin");
+    eternal.app.bigWin(artifact.amount, "ARTIFACT SET COMPLETE", "RIS settlement recorded");
+    eternal.render("artifacts");
   }
 
   function applyVault(vault) {
@@ -443,6 +481,7 @@
     void refreshOdyssey();
     void refreshAlbums();
     void refreshSovereign();
+    void refreshArtifacts();
     refreshVault();
     refreshNightEvent();
     return result;
@@ -628,6 +667,11 @@
   }
   if (app.eternal) {
     app.eternal.handleOdysseyRound = function () {};
+    app.eternal.updateSet = function (set) {
+      const owned = Object.keys(this.data.artifacts.owned).filter((id) => id.startsWith(`${set}-`)).length;
+      this.data.artifacts.sets[set] = owned;
+      if (owned === 6 && !this.data.artifacts.sets[`${set}-claimed`]) void claimArtifactSet(this, set);
+    };
     app.eternal.startOdyssey = async function () {
       const response = await fetch("/api/economy/odyssey/start", { method: "POST", credentials: "include" });
       const payload = await response.json().catch(() => null);
@@ -681,6 +725,7 @@
   void refreshOdyssey();
   void refreshAlbums();
   void refreshSovereign();
+  void refreshArtifacts();
   refreshVault();
   refreshNightEvent();
 })();

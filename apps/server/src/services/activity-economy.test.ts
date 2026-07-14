@@ -98,6 +98,15 @@ describe("ActivityEconomyService missions", () => {
     await expect(service.openSovereignChest(user)).rejects.toMatchObject({ code: "casino_transaction_conflict" });
   });
 
+  it("settles a completed Eternal Artifact set through RIS exactly once", async () => {
+    const store = new MemoryStore();
+    store.save({ users: { [user.id]: { artifactMigrated: true, artifactOwned: ["eclipse-0", "eclipse-1", "eclipse-2", "eclipse-3", "eclipse-4", "eclipse-5"], artifactClaims: [] } } });
+    const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 9000, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+    expect(await service.claimArtifactSet(user, "eclipse")).toMatchObject({ amount: 4000, keys: 2, wallet: 9000 });
+    await expect(service.claimArtifactSet(user, "eclipse")).rejects.toMatchObject({ code: "casino_transaction_conflict" });
+  });
+
   it("awards a server-recorded daily mission once even when its round is retried", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
       if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 5600, currency: "Ris" }), { headers: { "content-type": "application/json" } });

@@ -67,6 +67,9 @@ type ActivityProgress = {
   sovereignMarks: number;
   sovereignChests: number;
   sovereignRounds: Record<string, number>;
+  artifactMigrated: boolean;
+  artifactOwned: string[];
+  artifactClaims: string[];
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -110,6 +113,8 @@ const odysseyBoons: OdysseyBoon[] = ["life", "coins", "key", "shield", "fame", "
 const collectionSeries = ["nocturne", "aurora", "crimson", "celestial", "obsidian", "eclipse", "lunar", "infernal", "verdant", "royal", "void", "solar"];
 const collectionTypes = ["avatar", "frame", "chip", "back", "aura", "emote"];
 const collectionItemIds = collectionSeries.flatMap((series) => collectionTypes.map((type) => `${series}_${type}`));
+const artifactSets = ["eclipse", "seraph", "dragon", "oracle", "obsidian", "velvet", "cosmos", "jester"];
+const artifactItemIds = artifactSets.flatMap((set) => Array.from({ length: 6 }, (_, index) => `${set}-${index}`));
 
 const adjustmentResponseSchema = z.object({
   ok: z.literal(true),
@@ -366,6 +371,33 @@ export class ActivityEconomyService {
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     return { amount, marks: next.sovereignMarks, chests, wallet: result.wallet, currency: result.currency };
+  }
+
+  async artifactStatus(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { migrated: progress.artifactMigrated, owned: progress.artifactOwned, claimed: progress.artifactClaims, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async migrateArtifacts(user: DiscordUser, owned: string[]) {
+    const progress = this.progressFor(user.id);
+    if (progress.artifactMigrated) return this.artifactStatus(user);
+    const next = { ...progress, artifactMigrated: true, artifactOwned: [...new Set(owned.filter((id) => artifactItemIds.includes(id)))] };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { migrated: true, owned: next.artifactOwned, claimed: next.artifactClaims, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async claimArtifactSet(user: DiscordUser, set: string) {
+    const progress = this.progressFor(user.id);
+    if (!progress.artifactMigrated || !artifactSets.includes(set) || progress.artifactClaims.includes(set)) throw new AppError(409, "casino_transaction_conflict", "Artifact reward is unavailable.");
+    if (!Array.from({ length: 6 }, (_, index) => `${set}-${index}`).every((id) => progress.artifactOwned.includes(id))) throw new AppError(409, "casino_transaction_conflict", "Artifact set is incomplete.");
+    const result = await requestActivityAdjustment({ transactionId: `activity-artifact-${user.id}-${set}`, discordUserId: user.id, sessionId: `artifact-${set}`, operation: "credit", amount: 4_000, reason: "collection" }, this.options.env, this.options.fetch);
+    const next = { ...progress, artifactClaims: [...progress.artifactClaims, set] };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { set, amount: 4_000, keys: 2, wallet: result.wallet, currency: result.currency };
   }
 
   async claimMystery(user: DiscordUser, offerId: string, index: number) {
@@ -944,7 +976,10 @@ function normalizeProgress(value: unknown): ActivityProgress {
     ,sovereignMigrated: raw.sovereignMigrated === true,
     sovereignMarks: Math.min(9_999, safeNonNegativeInteger(raw.sovereignMarks)),
     sovereignChests: safeNonNegativeInteger(raw.sovereignChests),
-    sovereignRounds: normalizeSovereignRounds(raw.sovereignRounds)
+    sovereignRounds: normalizeSovereignRounds(raw.sovereignRounds),
+    artifactMigrated: raw.artifactMigrated === true,
+    artifactOwned: Array.isArray(raw.artifactOwned) ? [...new Set(raw.artifactOwned.filter((id): id is string => typeof id === "string" && artifactItemIds.includes(id)))] : [],
+    artifactClaims: Array.isArray(raw.artifactClaims) ? [...new Set(raw.artifactClaims.filter((id): id is string => typeof id === "string" && artifactSets.includes(id)))] : []
   };
 }
 
@@ -1006,7 +1041,10 @@ function initialProgress(): ActivityProgress {
     sovereignMigrated: false,
     sovereignMarks: 0,
     sovereignChests: 0,
-    sovereignRounds: {}
+    sovereignRounds: {},
+    artifactMigrated: false,
+    artifactOwned: [],
+    artifactClaims: []
   };
 }
 

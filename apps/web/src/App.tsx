@@ -3,8 +3,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { exchangeAuthCode } from "./lib/api.js";
 import { getDiscordAuthorizationCode } from "./lib/discord.js";
 import { LuxCasinoScreen } from "./screens/LuxCasinoScreen.js";
+import { LegalScreen } from "./screens/LegalScreen.js";
 
 export function App() {
+  const pathname = window.location.pathname.replace(/\/+$/, "") || "/";
+  if (pathname === "/terms") return <LegalScreen document="terms" />;
+  if (pathname === "/privacy") return <LegalScreen document="privacy" />;
+
+  return <ActivityApp />;
+}
+
+function ActivityApp() {
   const [user, setUser] = useState<DiscordUser | null>(null);
   const authenticating = useRef(false);
 

@@ -24,13 +24,18 @@ type PartyMessage =
   | { type: "state"; players: PublicPartyPlayer[]; crown: number; feed: PartyFeedItem[]; league: PublicLeagueEntry[] }
   | { type: "feed"; item: PartyFeedItem }
   | { type: "crown"; id: string }
-  | { type: "league"; league: PublicLeagueEntry[] };
+  | { type: "league"; league: PublicLeagueEntry[] }
+  | { type: "raid"; raid: PublicPartyRaid };
 
 type PartyCrown = {
   id: string;
   recipients: Set<string>;
   createdAt: number;
 };
+
+type PartyRaidContributor = { id: string; name: string; glyph: string; damage: number };
+type PartyRaid = { id: string; bossId: string; name: string; title: string; icon: string; maxHp: number; hp: number; phase: number; startedAt: number; endsAt: number; defeatedAt: number; contributors: Map<string, PartyRaidContributor>; recipients: Set<string> };
+export type PublicPartyRaid = Omit<PartyRaid, "contributors" | "recipients"> & { contributors: PartyRaidContributor[] };
 
 export type PublicPartyPlayer = Omit<PartyPlayer, "lastSeen">;
 
@@ -55,6 +60,7 @@ type PartyRoom = {
   crowns: Map<string, PartyCrown>;
   leagueWeek: string;
   league: Map<string, PartyLeagueEntry>;
+  raid: PartyRaid;
   listeners: Set<(message: PartyMessage) => void>;
 };
 
@@ -65,7 +71,9 @@ type StoredPartyRoom = {
   crowns: { id: string; recipients: string[]; createdAt: number }[];
   leagueWeek: string;
   league: PartyLeagueEntry[];
+  raid: StoredPartyRaid;
 };
+type StoredPartyRaid = Omit<PartyRaid, "contributors" | "recipients"> & { contributors: PartyRaidContributor[]; recipients: string[] };
 
 type PartyState = { rooms: Record<string, StoredPartyRoom> };
 
@@ -107,6 +115,7 @@ export class PartyService {
         crowns: new Map(room.crowns.map((crown) => [crown.id, { ...crown, recipients: new Set(crown.recipients) }])),
         leagueWeek: room.leagueWeek,
         league: new Map(room.league.map((entry) => [entry.id, entry])),
+        raid: hydrateRaid(room.raid),
         listeners: new Set()
       });
     }
@@ -190,10 +199,23 @@ export class PartyService {
       entry.bestReturn = Math.max(entry.bestReturn, payout);
       entry.updatedAt = Date.now();
       room.league.set(userId, entry);
+      const raid = this.ensureRaid(room);
+      if (raid.hp > 0) {
+        const damage = clamp(Math.max(20, Math.floor(wager * .32 + net * .12 + 8)), 1, 8_000);
+        raid.hp = Math.max(0, raid.hp - damage);
+        raid.phase = raid.hp <= raid.maxHp * .25 ? 3 : raid.hp <= raid.maxHp * .6 ? 2 : 1;
+        const contributor = raid.contributors.get(userId) ?? { id: userId, name: player.name, glyph: player.glyph, damage: 0 };
+        contributor.name = player.name; contributor.glyph = player.glyph; contributor.damage += damage; raid.contributors.set(userId, contributor);
+        if (raid.hp === 0 && !raid.defeatedAt) { raid.defeatedAt = Date.now(); raid.recipients = new Set(raid.contributors.keys()); this.addFeed(room, `${raid.name} was defeated by the party.`); }
+        this.broadcast(room, { type: "raid", raid: this.raid(raid) } as PartyMessage);
+      }
       this.save();
       this.broadcast(room, { type: "league", league: this.league(room) });
     }
   }
+
+  raidState(userId: string, roomId: string): PublicPartyRaid | null { const room = this.rooms.get(roomId); if (!room || !room.players.has(userId)) return null; return this.raid(this.ensureRaid(room)); }
+  canClaimRaid(userId: string, roomId: string, raidId: string): boolean { const room = this.rooms.get(roomId); return Boolean(room?.raid.id === raidId && room.raid.defeatedAt && room.raid.recipients.has(userId)); }
 
   submitLeague(userId: string, roomId: string): { week: string; league: PublicLeagueEntry[] } | null {
     const room = this.rooms.get(roomId);
@@ -225,7 +247,7 @@ export class PartyService {
   private roomFor(roomId: string): PartyRoom {
     const existing = this.rooms.get(roomId);
     if (existing) return existing;
-    const room: PartyRoom = { players: new Map(), feed: [], crown: 0, crowns: new Map(), leagueWeek: jstWeekKey(), league: new Map(), listeners: new Set() };
+    const room: PartyRoom = { players: new Map(), feed: [], crown: 0, crowns: new Map(), leagueWeek: jstWeekKey(), league: new Map(), raid: createRaid(), listeners: new Set() };
     this.rooms.set(roomId, room);
     return room;
   }
@@ -275,6 +297,8 @@ export class PartyService {
     room.leagueWeek = week;
     room.league.clear();
   }
+  private ensureRaid(room: PartyRoom) { if ((room.raid.defeatedAt && Date.now() - room.raid.defeatedAt > 90_000) || Date.now() > room.raid.endsAt) room.raid = createRaid(room.raid.bossId); return room.raid; }
+  private raid(raid: PartyRaid): PublicPartyRaid { return { ...raid, contributors: Array.from(raid.contributors.values()).sort((a,b) => b.damage-a.damage).slice(0,10) }; }
 
   private broadcastState(room: PartyRoom) {
     this.broadcast(room, { type: "state", ...this.state(room) });
@@ -300,6 +324,7 @@ export class PartyService {
         crowns: Array.from(room.crowns.values(), (crown) => ({ ...crown, recipients: Array.from(crown.recipients) })),
         leagueWeek: room.leagueWeek,
         league: Array.from(room.league.values())
+        ,raid: { ...room.raid, contributors: Array.from(room.raid.contributors.values()), recipients: Array.from(room.raid.recipients) }
       };
     }
     this.options.store.save({ rooms });
@@ -322,7 +347,8 @@ function normalizeState(value: unknown): PartyState {
       const crowns = Array.isArray(room.crowns) ? room.crowns.flatMap(normalizeCrown).slice(-100) : [];
       const leagueWeek = typeof room.leagueWeek === "string" && /^\d{4}-\d{2}-\d{2}$/.test(room.leagueWeek) ? room.leagueWeek : jstWeekKey();
       const league = Array.isArray(room.league) ? room.league.filter(isLeagueEntry) : [];
-      return [[roomId, { players, feed, crown: clamp(safeInteger(room.crown), 0, 100), crowns, leagueWeek, league }]];
+      const raid = isStoredRaid(room.raid) ? room.raid : serializeRaid(createRaid());
+      return [[roomId, { players, feed, crown: clamp(safeInteger(room.crown), 0, 100), crowns, leagueWeek, league, raid }]];
     }))
   };
 }
@@ -363,3 +389,8 @@ function jstWeekKey(date = new Date()): string {
   jst.setUTCDate(jst.getUTCDate() - mondayOffset);
   return `${jst.getUTCFullYear()}-${String(jst.getUTCMonth() + 1).padStart(2, "0")}-${String(jst.getUTCDate()).padStart(2, "0")}`;
 }
+const RAID_BOSSES = [{id:"leviathan",name:"星喰いリヴァイアサン",title:"CO-OP PALACE RAID",icon:"◈",maxHp:240000},{id:"wyrm",name:"月蝕の古竜",title:"CO-OP PALACE RAID",icon:"♜",maxHp:300000}];
+function createRaid(previousBossId?: string): PartyRaid { const index=Math.max(0,RAID_BOSSES.findIndex(x=>x.id===previousBossId)+1)%RAID_BOSSES.length,boss=RAID_BOSSES[index]!; const now=Date.now(); return {id:randomUUID(),bossId:boss.id,name:boss.name,title:boss.title,icon:boss.icon,maxHp:boss.maxHp,hp:boss.maxHp,phase:1,startedAt:now,endsAt:now+45*60_000,defeatedAt:0,contributors:new Map(),recipients:new Set()}; }
+function serializeRaid(raid: PartyRaid): StoredPartyRaid { return {...raid,contributors:Array.from(raid.contributors.values()),recipients:Array.from(raid.recipients)}; }
+function hydrateRaid(raid: StoredPartyRaid): PartyRaid { return {...raid,contributors:new Map(raid.contributors.map(x=>[x.id,x])),recipients:new Set(raid.recipients)}; }
+function isStoredRaid(value: unknown): value is StoredPartyRaid { return Boolean(value && typeof value === "object" && typeof (value as Partial<StoredPartyRaid>).id === "string" && Array.isArray((value as Partial<StoredPartyRaid>).contributors) && Array.isArray((value as Partial<StoredPartyRaid>).recipients)); }

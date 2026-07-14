@@ -202,6 +202,18 @@ export class ActivityEconomyService {
     return { amount: 500, wallet: result.wallet, currency: result.currency };
   }
 
+  async claimRaid(user: DiscordUser, raidId: string) {
+    const result = await requestActivityAdjustment({
+      transactionId: `activity-raid-${user.id}-${raidId}`,
+      discordUserId: user.id,
+      sessionId: `raid-${raidId}`,
+      operation: "credit",
+      amount: 3_000,
+      reason: "raid"
+    }, this.options.env, this.options.fetch);
+    return { amount: 3_000, wallet: result.wallet, currency: result.currency };
+  }
+
   async recordMissionRound(user: DiscordUser, round: TrustedMissionRound) {
     let progress = this.ensureMissionDay(user.id, this.progressFor(user.id));
     if (progress.missionRounds.includes(round.id)) {

@@ -346,6 +346,21 @@ export function createApp(options: CreateAppOptions = {}) {
       res.json({ ok: true, ...league });
     })
   );
+  app.get("/api/raid/state", (req, res) => {
+    const user = getSession(req).user; const room = partyRoomSchema.safeParse(req.query.room);
+    if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+    if (!room.success) throw new AppError(400, "bad_request", "Party room is invalid.");
+    const raid = party.raidState(user.id, room.data);
+    if (!raid) throw new AppError(403, "unauthorized", "Join the party room before viewing the raid.");
+    res.json({ ok: true, raid });
+  });
+  app.post("/api/raid/:raidId/claim", asyncRoute(async (req, res) => {
+    const user = getSession(req).user; const room = partyRoomSchema.safeParse(req.body?.room); const raidId = z.string().uuid().safeParse(req.params.raidId);
+    if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+    if (!room.success || !raidId.success) throw new AppError(400, "bad_request", "Raid claim is invalid.");
+    if (!party.canClaimRaid(user.id, room.data, raidId.data)) throw new AppError(403, "unauthorized", "Raid reward is unavailable.");
+    res.json({ ok: true, raid: await activityEconomy.claimRaid(user, raidId.data) });
+  }));
 
   app.get("/api/party/events", (req, res) => {
     const user = getSession(req).user;

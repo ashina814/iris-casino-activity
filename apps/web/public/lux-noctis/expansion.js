@@ -738,6 +738,7 @@
     }
 
     async contributeRaid(game, wager, net) {
+      if (this.app.room?.online) { this.syncRaid(); return; }
       let damage = Math.max(20, Math.floor(wager * .32 + Math.max(0, net) * .12 + (this.data.mastery[game]?.level || 1) * 8));
       damage = Math.floor(damage * (1 + this.effect('raid')));
       if (this.festival().id === 'eclipse') damage = Math.floor(damage * 1.25);
@@ -762,9 +763,13 @@
       } catch {}
     }
 
-    claimRaid() {
+    async claimRaid() {
       const raid = this.data.raid.lastState;
       if (!raid?.defeatedAt || this.data.raid.claimed[raid.id]) return;
+      if (this.app.room?.online) {
+        try { const response=await fetch(`/api/raid/${raid.id}/claim`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room:this.app.room.room})}); if(!response.ok)return; const result=(await response.json()).raid; this.data.raid.claimed[raid.id]=Date.now(); this.app.profile.save(); this.app.bigWin?.(result.amount,'RAID CLEARED',`${raid.name} · RIS REWARD`); this.renderEventHub('raid'); } catch {};
+        return;
+      }
       this.data.raid.claimed[raid.id] = Date.now();
       const festivalBoost = this.festival().id === 'eclipse' ? 1.25 : 1;
       const coins = Math.floor(3000 * festivalBoost);

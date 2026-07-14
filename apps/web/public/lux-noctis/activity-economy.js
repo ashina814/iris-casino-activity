@@ -136,6 +136,40 @@
     app.profile.save();
   }
 
+  function applyAscension(ascension) {
+    if (!ascension || !app.ascension) return;
+    const local = app.ascension.data;
+    for (const [game, mastery] of Object.entries(ascension.mastery || {})) {
+      if (!local.mastery[game]) continue;
+      local.mastery[game] = { ...local.mastery[game], ...mastery };
+    }
+    const constellation = ascension.constellation || {};
+    local.constellation = {
+      ...local.constellation,
+      nodes: Object.fromEntries((constellation.nodes || []).map((id) => [id, local.constellation.nodes[id] || Date.now()])),
+      points: Number.isInteger(constellation.points) ? constellation.points : local.constellation.points,
+      earnedFromMastery: Number.isInteger(constellation.earnedFromMastery) ? constellation.earnedFromMastery : local.constellation.earnedFromMastery
+    };
+    app.profile.save();
+    app.ascension.updateAll();
+  }
+
+  async function refreshAscension() {
+    let response = await fetch("/api/economy/ascension", { credentials: "include" });
+    let payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !payload.ascension || !app.ascension) return;
+    if (!payload.ascension.migrated) {
+      const data = app.ascension.data;
+      const mastery = Object.fromEntries(Object.entries(data.mastery || {}).map(([game, value]) => [game, {
+        xp: Number(value?.xp || 0), level: Number(value?.level || 1), rounds: Number(value?.rounds || 0), wins: Number(value?.wins || 0)
+      }]));
+      response = await fetch("/api/economy/ascension/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ mastery, nodes: Object.keys(data.constellation?.nodes || {}), points: Number(data.constellation?.points || 0) }) });
+      payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.ascension) return;
+    }
+    applyAscension(payload.ascension);
+  }
+
   async function refreshMystery(openWhenAvailable = false) {
     const response = await fetch("/api/economy/mystery", { credentials: "include" });
     const payload = await response.json().catch(() => null);
@@ -245,6 +279,17 @@
   function snapshotWeeklyProgress() {
     if (!app.ascension) return null;
     return JSON.parse(JSON.stringify(app.ascension.data.weekly));
+  }
+
+  function snapshotAscensionProgress() {
+    if (!app.ascension) return null;
+    return { mastery: JSON.parse(JSON.stringify(app.ascension.data.mastery)), constellation: JSON.parse(JSON.stringify(app.ascension.data.constellation)) };
+  }
+
+  function restoreAscensionProgress(snapshot) {
+    if (!snapshot || !app.ascension) return;
+    app.ascension.data.mastery = snapshot.mastery;
+    app.ascension.data.constellation = snapshot.constellation;
   }
 
   function restoreWeeklyProgress(snapshot) {
@@ -621,15 +666,27 @@
     this.updateAll();
   };
   if (app.ascension) {
+    app.ascension.unlockNode = async function (id) {
+      try {
+        const response = await fetch(`/api/economy/ascension/nodes/${encodeURIComponent(id)}`, { method: "POST", credentials: "include" });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok || !payload.ascension) return;
+        applyAscension(payload.ascension);
+        this.renderAscension("constellation");
+      } catch {}
+    };
     const localAscensionRound = app.ascension.onRound;
     app.ascension.onRound = function (payload) {
       const collectionResources = snapshotCollectionResources();
       const weeklyProgress = snapshotWeeklyProgress();
+      const ascensionProgress = snapshotAscensionProgress();
       const result = localAscensionRound.call(this, payload);
       restoreCollectionResources(collectionResources);
       restoreWeeklyProgress(weeklyProgress);
+      restoreAscensionProgress(ascensionProgress);
       void refreshAlbums();
       void refreshWeekly();
+      void refreshAscension();
       return result;
     };
     app.ascension.addSeasonXp = function () {};
@@ -867,6 +924,7 @@
     .catch(() => {});
   refreshMissions();
   void refreshWeekly();
+  void refreshAscension();
   void refreshMystery();
   void refreshSeason();
   void refreshCircuit();

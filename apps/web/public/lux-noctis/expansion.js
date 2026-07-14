@@ -1212,7 +1212,11 @@
         duel.receipts[m.id] = {result:data.result,coins:paidCoins,requestedCoins:data.reward.coins,medals,ratingDelta,time:Date.now()};
         if (data.season) this.app.ascension.data.season = {...this.app.ascension.data.season,id:data.season.id,xp:data.season.xp,claimed:Object.fromEntries((data.season.claimed||[]).map(tier=>[tier,true]))};
         const masteryGame = m.mode==='dice'?'sicbo':m.mode;
-        this.app.ascension.addMastery(masteryGame, data.result==='win'?140:70, data.result==='win');
+        if (data.season?.ascension) {
+          const ascension = data.season.ascension;
+          for (const [game, mastery] of Object.entries(ascension.mastery || {})) if (this.app.ascension.data.mastery[game]) this.app.ascension.data.mastery[game] = {...this.app.ascension.data.mastery[game],...mastery};
+          this.app.ascension.data.constellation = {...this.app.ascension.data.constellation,nodes:Object.fromEntries((ascension.constellation?.nodes||[]).map(id=>[id,this.app.ascension.data.constellation.nodes[id]||Date.now()])),points:ascension.constellation?.points??this.app.ascension.data.constellation.points,earnedFromMastery:ascension.constellation?.earnedFromMastery??this.app.ascension.data.constellation.earnedFromMastery};
+        } else this.app.ascension.addMastery(masteryGame, data.result==='win'?140:70, data.result==='win');
         this.app.profile.save();
         this.app.ascension.updateAll();
         const rewardEl = $('#duelRewardState');

@@ -100,6 +100,17 @@ describe("ActivityEconomyService missions", () => {
     expect((await service.weeklyStatus(user)).items.find((item) => item.id === "capsule")).toMatchObject({ progress: 1, target: 4 });
   });
 
+  it("migrates and authorizes constellation progression on the server", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    expect(service.migrateAscension(user, { mastery: { blackjack: { xp: 0, level: 1, rounds: 0, wins: 0 } }, nodes: ["fortune_1"], points: 2 })).toMatchObject({ migrated: true, mastery: { blackjack: { level: 1 } }, constellation: { nodes: ["fortune_1"], points: 2 } });
+    expect(service.unlockConstellation(user, "fortune_3")).toMatchObject({ constellation: { nodes: ["fortune_1", "fortune_3"], points: 0 } });
+
+    await service.recordMissionRound(user, { id: "blackjack-constellation", game: "blackjack", wager: 0, payout: 0 });
+    expect(service.ascensionStatus(user)).toMatchObject({ mastery: { blackjack: { xp: 24, level: 1, rounds: 1, wins: 0 } } });
+    expect(() => service.unlockConstellation(user, "fortune_7")).toThrow("Constellation prerequisites are incomplete.");
+  });
+
   it("claims a server-owned mystery coin reward exactly once", async () => {
     const store = new MemoryStore();
     store.save({ users: { [user.id]: { mysteryOffer: { id: "100-1", rewards: [{ type: "coins", amount: 700 }, { type: "dust", amount: 100 }, { type: "tokens", amount: 3 }], claimed: false } } } });

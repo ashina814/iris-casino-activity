@@ -84,7 +84,11 @@ type ActivityProgress = {
   raidClaims: string[];
   partyClaims: string[];
   duelClaims: string[];
-  mastery: Record<string, { xp: number; level: number }>;
+  ascensionMigrated: boolean;
+  constellationNodes: string[];
+  constellationPoints: number;
+  constellationMasteryPoints: number;
+  mastery: Record<string, { xp: number; level: number; rounds: number; wins: number }>;
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -98,7 +102,9 @@ type CircuitNode = { game: string; type: "play" | "win" | "return"; target: numb
 type OdysseyNode = { game: string; type: "play" | "win" | "wager"; target: number; boss: boolean };
 type OdysseyBoon = "life" | "coins" | "key" | "shield" | "fame" | "score";
 type NightEventId = "stardust" | "vault" | "echo" | "crown";
-export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>>; weeklyEvents?: Partial<Record<WeeklyEvent, number>> };
+type ConstellationEffect = "xp" | "stardust" | "vault" | "streakMastery" | "daily" | "lossDust" | "roundCapsule" | "drop" | "duplicate" | "album" | "rarity" | "mastery" | "capsuleCost" | "mythic" | "party" | "duelMedal" | "raid" | "ratingGuard" | "partyReward" | "duelSeason" | "weeklyShield";
+type ConstellationNode = { id: string; cost: number; requires?: string[]; effect: Partial<Record<ConstellationEffect, number>> };
+export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; masteryXp?: number; events?: Partial<Record<MissionEvent, number>>; weeklyEvents?: Partial<Record<WeeklyEvent, number>> };
 
 type ActivityProgressState = {
   users: Record<string, ActivityProgress>;
@@ -128,6 +134,11 @@ const weeklyPool: Omit<WeeklyProgress, "progress" | "claimed" | "games">[] = [
 ];
 const circuitGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch", "threecard", "derby", "ascent", "arcana", "moonshot"];
 const masteryGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo"];
+const constellationNodes: ConstellationNode[] = [
+  { id: "fortune_1", cost: 1, effect: { xp: .08 } }, { id: "fortune_2", cost: 1, effect: { stardust: .2 } }, { id: "fortune_3", cost: 2, requires: ["fortune_1"], effect: { vault: .2 } }, { id: "fortune_4", cost: 2, requires: ["fortune_2"], effect: { streakMastery: .25 } }, { id: "fortune_5", cost: 2, requires: ["fortune_3"], effect: { daily: .1 } }, { id: "fortune_6", cost: 2, requires: ["fortune_4"], effect: { lossDust: 1 } }, { id: "fortune_7", cost: 3, requires: ["fortune_5", "fortune_6"], effect: { xp: .12, stardust: .12 } }, { id: "fortune_8", cost: 4, requires: ["fortune_7"], effect: { roundCapsule: 1 } },
+  { id: "collector_1", cost: 1, effect: { drop: .03 } }, { id: "collector_2", cost: 1, effect: { duplicate: .25 } }, { id: "collector_3", cost: 2, requires: ["collector_1"], effect: { album: .25 } }, { id: "collector_4", cost: 2, requires: ["collector_2"], effect: { rarity: 1 } }, { id: "collector_5", cost: 2, requires: ["collector_3"], effect: { mastery: .15 } }, { id: "collector_6", cost: 2, requires: ["collector_4"], effect: { stardust: .15 } }, { id: "collector_7", cost: 3, requires: ["collector_5", "collector_6"], effect: { capsuleCost: .2 } }, { id: "collector_8", cost: 4, requires: ["collector_7"], effect: { mythic: 1 } },
+  { id: "social_1", cost: 1, effect: { party: .2 } }, { id: "social_2", cost: 1, effect: { duelMedal: .2 } }, { id: "social_3", cost: 2, requires: ["social_1"], effect: { raid: .25 } }, { id: "social_4", cost: 2, requires: ["social_2"], effect: { ratingGuard: .25 } }, { id: "social_5", cost: 2, requires: ["social_3"], effect: { partyReward: .3 } }, { id: "social_6", cost: 2, requires: ["social_4"], effect: { duelSeason: .5 } }, { id: "social_7", cost: 3, requires: ["social_5", "social_6"], effect: { mastery: .1, raid: .1 } }, { id: "social_8", cost: 4, requires: ["social_7"], effect: { weeklyShield: 1 } }
+];
 const odysseyGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch"];
 const odysseyBoons: OdysseyBoon[] = ["life", "coins", "key", "shield", "fame", "score"];
 const collectionSeries = ["nocturne", "aurora", "crimson", "celestial", "obsidian", "eclipse", "lunar", "infernal", "verdant", "royal", "void", "solar"];
@@ -231,6 +242,48 @@ export class ActivityEconomyService {
     return { week: progress.weeklyId, items: progress.weekly, eventTokens: progress.eventTokens, collection: this.publicCollection(progress), wallet: wallet.wallet, currency: wallet.currency };
   }
 
+  ascensionStatus(user: DiscordUser) {
+    return this.publicAscension(this.progressFor(user.id));
+  }
+
+  migrateAscension(user: DiscordUser, source: { mastery: ActivityProgress["mastery"]; nodes: string[]; points: number }) {
+    const progress = this.progressFor(user.id);
+    if (progress.ascensionMigrated) return this.publicAscension(progress);
+    const nodes = source.nodes.filter((id) => constellationNodes.some((node) => node.id === id));
+    const sourceMastery = normalizeMastery(source.mastery);
+    const mastery = Object.fromEntries(masteryGames.flatMap((game) => {
+      const existing = progress.mastery[game];
+      const incoming = sourceMastery[game];
+      if (!existing) return incoming ? [[game, incoming]] : [];
+      if (!incoming) return [[game, existing]];
+      const level = Math.max(existing.level, incoming.level);
+      return [[game, { level, xp: existing.level === incoming.level ? Math.max(existing.xp, incoming.xp) : level === existing.level ? existing.xp : incoming.xp, rounds: Math.max(existing.rounds, incoming.rounds), wins: Math.max(existing.wins, incoming.wins) }]];
+    }));
+    const next = {
+      ...progress,
+      ascensionMigrated: true,
+      constellationNodes: [...new Set(nodes)],
+      constellationPoints: Math.max(progress.constellationPoints, Math.min(100, safeNonNegativeInteger(source.points))),
+      mastery
+    };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return this.publicAscension(next);
+  }
+
+  unlockConstellation(user: DiscordUser, id: string) {
+    const progress = this.progressFor(user.id);
+    if (!progress.ascensionMigrated) throw new AppError(409, "casino_transaction_conflict", "Ascension migration is unavailable.");
+    const node = constellationNodes.find((candidate) => candidate.id === id);
+    if (!node || progress.constellationNodes.includes(id)) throw new AppError(409, "casino_transaction_conflict", "Constellation node is unavailable.");
+    if ((node.requires ?? []).some((required) => !progress.constellationNodes.includes(required))) throw new AppError(409, "casino_transaction_conflict", "Constellation prerequisites are incomplete.");
+    if (progress.constellationPoints < node.cost) throw new AppError(409, "casino_transaction_conflict", "Insufficient constellation points.");
+    const next = { ...progress, constellationNodes: [...progress.constellationNodes, id], constellationPoints: progress.constellationPoints - node.cost };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return this.publicAscension(next);
+  }
+
   async mysteryStatus(user: DiscordUser) {
     const progress = this.progressFor(user.id);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
@@ -255,7 +308,7 @@ export class ActivityEconomyService {
       ...progress,
       seasonClaimed: [...progress.seasonClaimed, tier],
       collectionCapsules: reward.type === "capsule" ? progress.collectionCapsules + reward.amount : progress.collectionCapsules,
-      collectionDust: reward.type === "dust" ? progress.collectionDust + reward.amount : progress.collectionDust,
+      collectionDust: reward.type === "dust" ? progress.collectionDust + this.stardustGain(progress, reward.amount) : progress.collectionDust,
       collectionShards: reward.type === "shards" ? progress.collectionShards + reward.amount : progress.collectionShards,
       eventTokens: reward.type === "tokens" ? progress.eventTokens + reward.amount : progress.eventTokens
     };
@@ -378,8 +431,10 @@ export class ActivityEconomyService {
   async openCollectionCapsule(user: DiscordUser) {
     const progress = this.progressFor(user.id);
     if (!progress.collectionMigrated) throw new AppError(409, "casino_transaction_conflict", "Collection migration is unavailable.");
-    if (progress.collectionCapsules <= 0 && progress.collectionDust < 300) throw new AppError(409, "insufficient_funds", "Insufficient Star Dust.");
-    const rarity = rollCollectionRarity();
+    const capsuleCost = Math.floor(300 * (1 - this.constellationEffect(progress, "capsuleCost")));
+    if (progress.collectionCapsules <= 0 && progress.collectionDust < capsuleCost) throw new AppError(409, "insufficient_funds", "Insufficient Star Dust.");
+    const rarityModifier = this.constellationEffect(progress, "rarity") + (this.constellationEffect(progress, "mythic") ? 1 : 0);
+    const rarity = this.constellationEffect(progress, "mythic") && randomInt(10_000) < 100 ? "mythic" : rollCollectionRarity(rarityModifier);
     const candidates = collectionItemIds.filter((id) => collectionRarity(id) === rarity);
     const unseen = candidates.filter((id) => !progress.collectionOwned.includes(id));
     const itemId = (unseen.length ? unseen : candidates)[randomInt((unseen.length ? unseen : candidates).length)]!;
@@ -388,8 +443,8 @@ export class ActivityEconomyService {
     let next = {
       ...progress,
       collectionCapsules: progress.collectionCapsules > 0 ? progress.collectionCapsules - 1 : 0,
-      collectionDust: progress.collectionCapsules > 0 ? progress.collectionDust : progress.collectionDust - 300,
-      collectionShards: progress.collectionShards + shards,
+      collectionDust: progress.collectionCapsules > 0 ? progress.collectionDust : progress.collectionDust - capsuleCost,
+      collectionShards: progress.collectionShards + Math.floor(shards * (1 + this.constellationEffect(progress, "duplicate"))),
       collectionOpened: progress.collectionOpened + 1,
       collectionDuplicates: progress.collectionDuplicates + (duplicate ? 1 : 0),
       collectionOwned: duplicate ? progress.collectionOwned : [...progress.collectionOwned, itemId]
@@ -419,10 +474,11 @@ export class ActivityEconomyService {
     const required = collectionTypes.map((type) => `${series}_${type}`);
     if (!required.every((id) => progress.collectionOwned.includes(id))) throw new AppError(409, "casino_transaction_conflict", "Album is incomplete.");
     const result = await requestActivityAdjustment({ transactionId: `activity-album-${user.id}-${series}`, discordUserId: user.id, sessionId: `album-${series}`, operation: "credit", amount: 3_000, reason: "album" }, this.options.env, this.options.fetch);
-    const next = { ...progress, albumClaims: [...progress.albumClaims, series], collectionDust: progress.collectionDust + 400, collectionShards: progress.collectionShards + 150 };
+    const dust = this.stardustGain(progress, Math.floor(400 * (1 + this.constellationEffect(progress, "album"))));
+    const next = { ...progress, albumClaims: [...progress.albumClaims, series], collectionDust: progress.collectionDust + dust, collectionShards: progress.collectionShards + 150 };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
-    return { series, amount: 3_000, dust: 400, shards: 150, collection: this.publicCollection(next), wallet: result.wallet, currency: result.currency };
+    return { series, amount: 3_000, dust, shards: 150, collection: this.publicCollection(next), wallet: result.wallet, currency: result.currency };
   }
 
   async sovereignStatus(user: DiscordUser) {
@@ -517,7 +573,7 @@ export class ActivityEconomyService {
       ...progress,
       mysteryOffer: { ...offer, claimed: true },
       collectionCapsules: reward.type === "capsule" ? progress.collectionCapsules + reward.amount : progress.collectionCapsules,
-      collectionDust: reward.type === "dust" ? progress.collectionDust + reward.amount : progress.collectionDust,
+      collectionDust: reward.type === "dust" ? progress.collectionDust + this.stardustGain(progress, reward.amount) : progress.collectionDust,
       eventTokens: reward.type === "tokens" ? progress.eventTokens + reward.amount : progress.eventTokens
     };
     this.state.users[user.id] = progress; this.options.store.save(this.state);
@@ -531,7 +587,7 @@ export class ActivityEconomyService {
     if (item.claimed) return { id, amount: 0, wallet: (await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch)).wallet, currency: "Ris", alreadyClaimed: true };
     const result = await requestActivityAdjustment({ transactionId: `activity-weekly-${user.id}-${progress.weeklyId}-${id}`, discordUserId: user.id, sessionId: `weekly-${progress.weeklyId}-${id}`, operation: "credit", amount: item.reward.coins, reason: "weekly" }, this.options.env, this.options.fetch);
     const weekly = progress.weekly.map((entry) => entry.id === id ? { ...entry, claimed: true } : entry);
-    const next = { ...progress, weekly, collectionDust: progress.collectionDust + item.reward.dust, eventTokens: progress.eventTokens + item.reward.tokens };
+    const next = { ...progress, weekly, collectionDust: progress.collectionDust + this.stardustGain(progress, item.reward.dust), eventTokens: progress.eventTokens + item.reward.tokens };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     return { id, amount: item.reward.coins, reward: item.reward, eventTokens: next.eventTokens, collection: this.publicCollection(next), wallet: result.wallet, currency: result.currency, alreadyClaimed: false };
@@ -621,10 +677,11 @@ export class ActivityEconomyService {
       amount: 3_000,
       reason: "raid"
     }, this.options.env, this.options.fetch);
-    const next = { ...progress, raidClaims: [...progress.raidClaims, raidId].slice(-500), collectionDust: progress.collectionDust + 350, collectionCapsules: progress.collectionCapsules + 1 };
+    const dust = this.stardustGain(progress, 350);
+    const next = { ...progress, raidClaims: [...progress.raidClaims, raidId].slice(-500), collectionDust: progress.collectionDust + dust, collectionCapsules: progress.collectionCapsules + 1 };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
-    return { amount: 3_000, dust: 350, capsules: 1, alreadyClaimed: false, collection: this.publicCollection(next), wallet: result.wallet, currency: result.currency };
+    return { amount: 3_000, dust, capsules: 1, alreadyClaimed: false, collection: this.publicCollection(next), wallet: result.wallet, currency: result.currency };
   }
 
   async claimDuel(user: DiscordUser, duelId: string, amount: number) {
@@ -647,14 +704,20 @@ export class ActivityEconomyService {
     return { amount, alreadyClaimed: false, wallet: result.wallet, currency: result.currency };
   }
 
-  awardDuelSeason(user: DiscordUser, result: "win" | "loss" | "tie") {
+  awardDuelSeason(user: DiscordUser, result: "win" | "loss" | "tie", mode?: string) {
     let progress = this.ensureSeason(user.id, this.progressFor(user.id));
-    const gain = result === "win" ? 180 : 80;
+    const gain = result === "win" ? Math.floor(180 * (1 + this.constellationEffect(progress, "duelSeason"))) : 80;
     progress = { ...progress, seasonXp: Math.min(9_999, progress.seasonXp + gain) };
     if (result === "win") progress = this.advanceWeeklyEvent(user.id, progress, "duelWin", 1);
+    const game = mode === "dice" ? "sicbo" : mode;
+    if (game && masteryGames.includes(game)) {
+      const mastery = this.advanceMastery(progress, { id: `duel-${game}-${Date.now()}`, game, wager: 0, payout: result === "win" ? 1 : 0, masteryXp: result === "win" ? 140 : 70 });
+      progress = mastery.progress;
+      if (mastery.levels) progress = this.advanceWeeklyEvent(user.id, progress, "masteryLevel", mastery.levels);
+    }
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
-    return { id: progress.seasonId, xp: progress.seasonXp, tier: seasonTier(progress.seasonXp), claimed: progress.seasonClaimed };
+    return { id: progress.seasonId, xp: progress.seasonXp, tier: seasonTier(progress.seasonXp), claimed: progress.seasonClaimed, ascension: this.publicAscension(progress) };
   }
 
   async recordMissionRound(user: DiscordUser, round: TrustedMissionRound) {
@@ -780,7 +843,7 @@ export class ActivityEconomyService {
       };
     }
 
-    const requested = dailyGiftAmount(wallet.wallet, progress.dailyStreak);
+    const requested = Math.floor(dailyGiftAmount(wallet.wallet, progress.dailyStreak) * (1 + this.constellationEffect(progress, "daily")));
     const amount = Math.min(requested, progress.reserve);
     const remainder = requested - amount;
     const nextNoteRemainder = progress.noteRemainder + remainder;
@@ -958,7 +1021,7 @@ export class ActivityEconomyService {
 
   private advanceVault(progress: ActivityProgress, round: TrustedMissionRound, doubled: boolean): ActivityProgress {
     if (progress.vaultReady) return progress;
-    const baseGain = Math.min(10, Math.max(1, 2 + Math.floor(round.wager / 2500) + (round.payout > round.wager ? 1 : 0)));
+    const baseGain = Math.min(10, Math.max(1, Math.floor((2 + Math.floor(round.wager / 2500) + (round.payout > round.wager ? 1 : 0)) * (1 + this.constellationEffect(progress, "vault")))));
     const gain = doubled ? baseGain * 2 : baseGain;
     const vaultCharge = Math.min(100, progress.vaultCharge + gain);
     const vaultReady = vaultCharge >= 100 && progress.vaultPot >= 100;
@@ -990,8 +1053,11 @@ export class ActivityEconomyService {
   private advanceCollection(progress: ActivityProgress, round: TrustedMissionRound) {
     if (!progress.collectionMigrated) return progress;
     const won = round.payout > round.wager;
-    const dust = 6 + Math.floor(round.wager / 1_200) + (won ? 12 : 0);
-    const capsule = randomInt(10_000) < 350;
+    let dust = 6 + Math.floor(round.wager / 1_200) + (won ? 12 : 0);
+    if (!won && this.constellationEffect(progress, "lossDust")) dust += Math.min(50, Math.floor(round.wager * .01));
+    dust = this.stardustGain(progress, dust);
+    const rounds = Object.values(progress.mastery).reduce((total, mastery) => total + mastery.rounds, 0);
+    const capsule = Boolean(this.constellationEffect(progress, "roundCapsule") && rounds > 0 && rounds % 10 === 0) || randomInt(10_000) < 350 + Math.floor(this.constellationEffect(progress, "drop") * 10_000);
     return {
       ...progress,
       collectionDust: progress.collectionDust + dust,
@@ -1010,8 +1076,10 @@ export class ActivityEconomyService {
   private advanceMastery(progress: ActivityProgress, round: TrustedMissionRound) {
     const game = round.game ?? round.id.split("-", 1)[0] ?? "";
     if (!masteryGames.includes(game)) return { progress, levels: 0 };
-    const current = progress.mastery[game] ?? { xp: 0, level: 1 };
-    let xp = current.xp + 24 + Math.floor(round.wager / 450) + (round.payout > round.wager ? 34 : 0);
+    const current = progress.mastery[game] ?? { xp: 0, level: 1, rounds: 0, wins: 0 };
+    const win = round.payout > round.wager;
+    const baseGain = round.masteryXp ?? 24 + Math.floor(round.wager / 450) + (win ? 34 : 0);
+    let xp = current.xp + Math.max(1, Math.floor(baseGain * (1 + this.constellationEffect(progress, "mastery"))));
     let level = current.level;
     let levels = 0;
     let dust = 0;
@@ -1023,7 +1091,16 @@ export class ActivityEconomyService {
       dust += 35 + level * 5;
       if (level % 3 === 0) capsules += 1;
     }
-    return { progress: { ...progress, mastery: { ...progress.mastery, [game]: { xp, level } }, collectionDust: progress.collectionDust + dust, collectionCapsules: progress.collectionCapsules + capsules }, levels };
+    const earnedPoints = Array.from({ length: levels }, (_, index) => current.level + index + 1).filter((nextLevel) => nextLevel % 5 === 0).length;
+    return { progress: { ...progress, mastery: { ...progress.mastery, [game]: { xp, level, rounds: current.rounds + 1, wins: current.wins + (win ? 1 : 0) } }, constellationPoints: progress.constellationPoints + earnedPoints, constellationMasteryPoints: progress.constellationMasteryPoints + earnedPoints, collectionDust: progress.collectionDust + dust, collectionCapsules: progress.collectionCapsules + capsules }, levels };
+  }
+
+  private constellationEffect(progress: ActivityProgress, effect: ConstellationEffect) {
+    return progress.constellationNodes.reduce((total, id) => total + (constellationNodes.find((node) => node.id === id)?.effect[effect] ?? 0), 0);
+  }
+
+  private stardustGain(progress: ActivityProgress, amount: number) {
+    return Math.floor(Math.max(0, amount) * (1 + this.constellationEffect(progress, "stardust")));
   }
 
   private grantArtifact(progress: ActivityProgress, forcedRarity?: ArtifactRarity) {
@@ -1046,6 +1123,10 @@ export class ActivityEconomyService {
       opened: progress.collectionOpened,
       duplicates: progress.collectionDuplicates
     };
+  }
+
+  private publicAscension(progress: ActivityProgress) {
+    return { migrated: progress.ascensionMigrated, mastery: progress.mastery, constellation: { nodes: progress.constellationNodes, points: progress.constellationPoints, earnedFromMastery: progress.constellationMasteryPoints } };
   }
 
   private publicArtifacts(progress: ActivityProgress) {
@@ -1109,13 +1190,14 @@ function collectionRarity(itemId: string): CollectionRarity {
   return "common";
 }
 
-function rollCollectionRarity(): CollectionRarity {
-  const roll = randomInt(100);
-  if (roll < 54) return "common";
-  if (roll < 82) return "rare";
-  if (roll < 94) return "epic";
-  if (roll < 99) return "legendary";
-  return "mythic";
+function rollCollectionRarity(modifier = 0): CollectionRarity {
+  const weights: Record<CollectionRarity, number> = { common: 54, rare: 28, epic: 12 + modifier * 2, legendary: 5 + modifier, mythic: 1 + modifier * .35 };
+  let roll = randomInt(1_000_000) / 1_000_000 * Object.values(weights).reduce((total, weight) => total + weight, 0);
+  for (const rarity of ["mythic", "legendary", "epic", "rare", "common"] as const) {
+    roll -= weights[rarity];
+    if (roll <= 0) return rarity;
+  }
+  return "common";
 }
 
 function collectionItem(id: string) {
@@ -1265,6 +1347,10 @@ function normalizeProgress(value: unknown): ActivityProgress {
     raidClaims: Array.isArray(raw.raidClaims) ? [...new Set(raw.raidClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : [],
     partyClaims: Array.isArray(raw.partyClaims) ? [...new Set(raw.partyClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : [],
     duelClaims: Array.isArray(raw.duelClaims) ? [...new Set(raw.duelClaims.filter((id): id is string => typeof id === "string" && id.length <= 160))].slice(-500) : [],
+    ascensionMigrated: raw.ascensionMigrated === true,
+    constellationNodes: Array.isArray(raw.constellationNodes) ? [...new Set(raw.constellationNodes.filter((id): id is string => typeof id === "string" && constellationNodes.some((node) => node.id === id)))] : [],
+    constellationPoints: Math.min(100, safeNonNegativeInteger(raw.constellationPoints)),
+    constellationMasteryPoints: safeNonNegativeInteger(raw.constellationMasteryPoints),
     mastery: normalizeMastery(raw.mastery)
   };
 }
@@ -1345,6 +1431,10 @@ function initialProgress(): ActivityProgress {
     raidClaims: [],
     partyClaims: [],
     duelClaims: [],
+    ascensionMigrated: false,
+    constellationNodes: [],
+    constellationPoints: 0,
+    constellationMasteryPoints: 0,
     mastery: {}
   };
 }
@@ -1431,8 +1521,9 @@ function normalizeMastery(value: unknown): ActivityProgress["mastery"] {
   if (!value || typeof value !== "object") return {};
   return Object.fromEntries(Object.entries(value).flatMap(([game, entry]) => {
     if (!masteryGames.includes(game) || !entry || typeof entry !== "object") return [];
-    const raw = entry as { xp?: unknown; level?: unknown };
-    return [[game, { xp: safeNonNegativeInteger(raw.xp), level: Math.min(50, Math.max(1, safeNonNegativeInteger(raw.level, 1))) }]];
+    const raw = entry as { xp?: unknown; level?: unknown; rounds?: unknown; wins?: unknown };
+    const rounds = safeNonNegativeInteger(raw.rounds);
+    return [[game, { xp: safeNonNegativeInteger(raw.xp), level: Math.min(50, Math.max(1, safeNonNegativeInteger(raw.level, 1))), rounds, wins: Math.min(rounds, safeNonNegativeInteger(raw.wins)) }]];
   }));
 }
 

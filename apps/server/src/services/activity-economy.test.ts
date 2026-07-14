@@ -136,12 +136,16 @@ describe("ActivityEconomyService missions", () => {
   it("runs a server-owned Crown Circuit and settles its daily reward", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 13000, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
     const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    await service.migrateSovereign(user, 0, 0);
     const started = await service.startCircuit(user);
     for (const [index, node] of started.route.entries()) {
       const payout = node.type === "play" ? 0 : node.type === "win" ? 200 : 200;
       await service.recordMissionRound(user, { id: `circuit-${index}-${node.game}`, game: node.game, wager: 100, payout });
     }
     expect(await service.circuitStatus(user)).toMatchObject({ active: false, stage: 7, clears: 1, claimedDay: expect.any(String) });
+    const sovereign = await service.sovereignStatus(user);
+    expect(sovereign).toMatchObject({ medals: { circuit1: expect.any(Number), games5: expect.any(Number) } });
+    expect(sovereign.marks).toBeGreaterThanOrEqual(25);
     const adjustment = fetchMock.mock.calls.find(([, init]) => String(init?.body).includes('"reason":"circuit"'));
     expect(JSON.parse(String(adjustment?.[1]?.body))).toMatchObject({ amount: 8000, reason: "circuit" });
   });
@@ -193,9 +197,23 @@ describe("ActivityEconomyService missions", () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 7000, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
     const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
     const chest = await service.openSovereignChest(user);
-    expect(chest).toMatchObject({ marks: 0, chests: 1, wallet: 7000 });
+    expect(chest).toMatchObject({ marks: 2, chests: 1, wallet: 7000, medals: { chest: expect.any(Number) } });
     expect([2000, 3000, 4000, 6000, 10000]).toContain(chest.amount);
     await expect(service.openSovereignChest(user)).rejects.toMatchObject({ code: "casino_transaction_conflict" });
+  });
+
+  it("keeps Sovereign stars, medals, marks, and special records on the server", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store: new MemoryStore() });
+    await service.migrateSovereign(user, 0, 0, { prestige: 1 });
+    await service.recordMissionRound(user, { id: "sovereign-moonshot-1", game: "moonshot", wager: 100, payout: 0, score: 90 });
+    await service.recordMissionRound(user, { id: "sovereign-moonshot-2", game: "moonshot", wager: 100, payout: 200, score: 180 });
+    await service.recordMissionRound(user, { id: "sovereign-moonshot-3", game: "moonshot", wager: 100, payout: 95, score: 300, sovereignEvents: { moonshotPerfect: true } });
+
+    const sovereign = await service.sovereignStatus(user);
+    expect(sovereign).toMatchObject({ marks: 10, stats: { moonshot: { rounds: 3, wins: 1, scoreMax: 300 } }, special: { moonshotPerfect: true } });
+    expect(sovereign.medals).toMatchObject({ first: expect.any(Number), darts180: expect.any(Number), darts300: expect.any(Number), prestige: expect.any(Number) });
+    expect(sovereign.stars).toBe(1);
   });
 
   it("settles a completed Eternal Artifact set through RIS exactly once", async () => {

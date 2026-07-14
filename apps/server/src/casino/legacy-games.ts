@@ -92,7 +92,30 @@ export class LegacyGamesService {
     if (round.game === "holdem" || round.game === "threecard") delete state.deck;
     if (round.game === "holdem" && round.phase === "active") state.dealer = hiddenCards(2);
     if (round.game === "threecard" && round.phase === "active") state.dealer = hiddenCards(3);
-    return { ...round, state, serverNow: Date.now() };
+    return { ...round, state, sovereign: this.sovereignMetadata(round), serverNow: Date.now() };
+  }
+  private sovereignMetadata(round: Round) {
+    const events: Record<string, boolean> = {};
+    let score: number | undefined;
+    if (round.game === "threecard") {
+      const player = (round.state as ThreeState).playerEval as { rank?: number } | null;
+      if (player?.rank === 6) events.threecardSF = true;
+    }
+    if (round.game === "derby") {
+      const state = round.state as DerbyState;
+      if (state.order[0] === state.selection && (state.odds[state.selection] ?? 0) >= 7) events.derbyUnderdog = true;
+    }
+    if (round.game === "ascent" && round.bet > 0 && (round.payout ?? 0) / round.bet >= 10) events.ascentTen = true;
+    if (round.game === "arcana") {
+      const state = round.state as ArcanaState;
+      if (state.matched.length === 16 && state.moves <= 10 && state.startedAt !== null && Date.now() - state.startedAt <= 20_000) events.arcanaPerfect = true;
+    }
+    if (round.game === "moonshot") {
+      score = (round.state as MoonshotState).scores.reduce((total, value) => total + value, 0);
+      if (score === 300) events.moonshotPerfect = true;
+    }
+    if (round.game === "tower" && (round.state as TowerState).floor >= 10 && (round.payout ?? 0) > 0) events.towerSummit = true;
+    return { score, events };
   }
   private require(user: DiscordUser, id: string) { const round = this.rounds.get(id); if (!round || round.discordUserId !== user.id) throw new AppError(404, "casino_transaction_not_found", "Game round was not found."); return round; }
   private validate(game: Game, id: string, bet: number) { if (!valid(id) || ![100,500,1000,2500,5000].includes(bet) || !["holdem","tower","threecard","derby","ascent","arcana","moonshot"].includes(game)) throw new AppError(400, "bad_request", "Game round is invalid."); }

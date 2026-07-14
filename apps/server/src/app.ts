@@ -269,7 +269,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/economy/collection/craft", asyncRoute(async (req, res) => { const user = getSession(req).user; if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); res.json({ ok: true, drop: await activityEconomy.craftCollectionLegendary(user) }); }));
   app.post("/api/economy/albums/:series/claim", asyncRoute(async (req, res) => { const user = getSession(req).user; const series = z.string().min(1).max(32).safeParse(req.params.series); if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); if (!series.success) throw new AppError(400, "bad_request", "Album is invalid."); res.json({ ok: true, album: await activityEconomy.claimAlbum(user, series.data) }); }));
   app.get("/api/economy/sovereign", asyncRoute(async (req, res) => { const user = getSession(req).user; if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); res.json({ ok: true, sovereign: await activityEconomy.sovereignStatus(user) }); }));
-  app.post("/api/economy/sovereign/migrate", asyncRoute(async (req, res) => { const user = getSession(req).user; const body = z.object({ marks: z.number().int().min(0).max(9999), chests: z.number().int().min(0).max(9999) }).safeParse(req.body); if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); if (!body.success) throw new AppError(400, "bad_request", "Sovereign migration is invalid."); res.json({ ok: true, sovereign: await activityEconomy.migrateSovereign(user, body.data.marks, body.data.chests) }); }));
+  app.post("/api/economy/sovereign/migrate", asyncRoute(async (req, res) => { const user = getSession(req).user; const stat = z.object({ rounds: z.number().int().min(0).max(10_000_000), wins: z.number().int().min(0).max(10_000_000), best: z.number().nonnegative().finite().max(100_000), biggest: z.number().int().min(0).max(1_000_000_000), scoreMax: z.number().int().min(0).max(1_000_000_000) }); const body = z.object({ marks: z.number().int().min(0).max(9999), chests: z.number().int().min(0).max(9999), stats: z.record(z.string().max(32), stat).optional(), medals: z.record(z.string().max(32), z.number().int().min(0).max(9_999_999_999_999)).optional(), special: z.object({ threecardSF: z.boolean().optional(), derbyUnderdog: z.boolean().optional(), ascentTen: z.boolean().optional(), arcanaPerfect: z.boolean().optional(), moonshotPerfect: z.boolean().optional(), towerSummit: z.boolean().optional(), scratchWin: z.boolean().optional() }).optional(), streak: z.number().int().min(0).max(10_000_000).optional(), bestStreak: z.number().int().min(0).max(10_000_000).optional(), prestige: z.number().int().min(0).max(10_000_000).optional() }).safeParse(req.body); if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); if (!body.success) throw new AppError(400, "bad_request", "Sovereign migration is invalid."); res.json({ ok: true, sovereign: await activityEconomy.migrateSovereign(user, body.data.marks, body.data.chests, body.data) }); }));
   app.post("/api/economy/sovereign/chest", asyncRoute(async (req, res) => { const user = getSession(req).user; if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); res.json({ ok: true, chest: await activityEconomy.openSovereignChest(user) }); }));
   app.get("/api/economy/artifacts", asyncRoute(async (req, res) => { const user = getSession(req).user; if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); res.json({ ok: true, artifacts: await activityEconomy.artifactStatus(user) }); }));
   app.post("/api/economy/artifacts/migrate", asyncRoute(async (req, res) => { const user = getSession(req).user; const body = z.object({ owned: z.array(z.string().max(32)).max(48), keys: z.number().int().min(0).max(100_000), fragments: z.number().int().min(0).max(29), opened: z.number().int().min(0).max(1_000_000), duplicates: z.number().int().min(0).max(1_000_000), shards: z.number().int().min(0).max(10_000_000) }).safeParse(req.body); if (!user) throw new AppError(401, "unauthorized", "Authentication is required."); if (!body.success) throw new AppError(400, "bad_request", "Artifact migration is invalid."); res.json({ ok: true, artifacts: await activityEconomy.migrateArtifacts(user, body.data.owned, body.data) }); }));
@@ -745,7 +745,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const game = req.params.game;
       if (!parsed.success || !game || !["holdem", "tower", "threecard", "derby", "ascent", "arcana", "moonshot"].includes(game)) throw new AppError(400, "bad_request", "Game round is invalid.");
       const round = await legacyGames.start(user, game as "holdem" | "tower" | "threecard" | "derby" | "ascent" | "arcana" | "moonshot", parsed.data.roundId, parsed.data.bet, parsed.data);
-      await recordMissionIfSettled(activityEconomy,party,user,game,round.id,round.bet,round.payout,round.phase);
+      await recordMissionIfSettled(activityEconomy,party,user,game,round.id,round.bet,round.payout,round.phase,round.sovereign);
       res.status(201).json({ ok: true, round });
     })
   );
@@ -758,7 +758,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ actionId: z.string().min(1).max(128), action: z.string().min(1).max(32), door: z.number().int().optional(), index: z.number().int().optional() }).safeParse(req.body);
       if (!roundId || !game || !parsed.success || !["holdem", "tower", "threecard", "ascent", "arcana", "moonshot"].includes(game)) throw new AppError(400, "bad_request", "Game action is invalid.");
       const round = await legacyGames.action(user, roundId, parsed.data.actionId, parsed.data.action, parsed.data);
-      await recordMissionIfSettled(activityEconomy,party,user,game,round.id,round.bet,round.payout,round.phase);
+      await recordMissionIfSettled(activityEconomy,party,user,game,round.id,round.bet,round.payout,round.phase,round.sovereign);
       res.json({ ok: true, round });
     })
   );
@@ -850,9 +850,9 @@ async function recordBlackjackMission(activityEconomy: ActivityEconomyService, p
   });
 }
 
-async function recordMissionIfSettled(activityEconomy: ActivityEconomyService, party: PartyService, user: DiscordUser, game: string, id: string, wager: number, payout: number | null, phase: string) {
+async function recordMissionIfSettled(activityEconomy: ActivityEconomyService, party: PartyService, user: DiscordUser, game: string, id: string, wager: number, payout: number | null, phase: string, sovereign?: { score?: number; events?: Record<string, boolean> }) {
   if (phase !== "settled") return;
-  await recordActivityRound(activityEconomy, party, user, { id: `${game}-${id}`, wager, payout: payout ?? 0 });
+  await recordActivityRound(activityEconomy, party, user, { id: `${game}-${id}`, wager, payout: payout ?? 0, score: sovereign?.score, sovereignEvents: { ...sovereign?.events, ...(game === "scratch" && (payout ?? 0) > wager ? { scratchWin: true } : {}) } });
 }
 
 async function recordActivityRound(activityEconomy: ActivityEconomyService, party: PartyService, user: DiscordUser, round: Parameters<ActivityEconomyService["recordMissionRound"]>[1]) {

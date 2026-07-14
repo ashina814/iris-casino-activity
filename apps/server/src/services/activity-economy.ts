@@ -73,6 +73,12 @@ type ActivityProgress = {
   sovereignMarks: number;
   sovereignChests: number;
   sovereignRounds: Record<string, number>;
+  sovereignStats: Record<string, SovereignStat>;
+  sovereignMedals: Record<string, number>;
+  sovereignSpecial: SovereignSpecial;
+  sovereignWinStreak: number;
+  sovereignBestWinStreak: number;
+  sovereignPrestige: number;
   artifactMigrated: boolean;
   artifactOwned: string[];
   artifactClaims: string[];
@@ -114,7 +120,10 @@ type OdysseyBoon = "life" | "coins" | "key" | "shield" | "fame" | "score";
 type NightEventId = "stardust" | "vault" | "echo" | "crown";
 type ConstellationEffect = "xp" | "stardust" | "vault" | "streakMastery" | "daily" | "lossDust" | "roundCapsule" | "drop" | "duplicate" | "album" | "rarity" | "mastery" | "capsuleCost" | "mythic" | "party" | "duelMedal" | "raid" | "ratingGuard" | "partyReward" | "duelSeason" | "weeklyShield";
 type ConstellationNode = { id: string; cost: number; requires?: string[]; effect: Partial<Record<ConstellationEffect, number>> };
-export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; masteryXp?: number; events?: Partial<Record<MissionEvent, number>>; weeklyEvents?: Partial<Record<WeeklyEvent, number>> };
+type SovereignStat = { rounds: number; wins: number; best: number; biggest: number; scoreMax: number };
+type SovereignSpecialId = "threecardSF" | "derbyUnderdog" | "ascentTen" | "arcanaPerfect" | "moonshotPerfect" | "towerSummit" | "scratchWin";
+type SovereignSpecial = Record<SovereignSpecialId, boolean>;
+export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; masteryXp?: number; events?: Partial<Record<MissionEvent, number>>; weeklyEvents?: Partial<Record<WeeklyEvent, number>>; score?: number; sovereignEvents?: Partial<Record<SovereignSpecialId, boolean>> };
 
 type ActivityProgressState = {
   users: Record<string, ActivityProgress>;
@@ -143,6 +152,7 @@ const weeklyPool: Omit<WeeklyProgress, "progress" | "claimed" | "games">[] = [
   { id: "capsule", event: "capsule", target: 4, reward: { coins: 2200, dust: 250, tokens: 3 } }
 ];
 const circuitGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch", "threecard", "derby", "ascent", "arcana", "moonshot"];
+const sovereignMedalIds = ["first", "round25", "round100", "round500", "win10", "win50", "streak5", "streak10", "games5", "games12", "games23", "stars10", "stars40", "stars80", "stars115", "circuit1", "circuit7", "chest", "rich100", "rich1m", "three", "threeSF", "derby", "underdog", "ascent2", "ascent10", "arcana", "arcanaPerfect", "darts180", "darts300", "mines", "tower", "scratch", "pvp", "collector", "prestige"] as const;
 const masteryGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo"];
 const constellationNodes: ConstellationNode[] = [
   { id: "fortune_1", cost: 1, effect: { xp: .08 } }, { id: "fortune_2", cost: 1, effect: { stardust: .2 } }, { id: "fortune_3", cost: 2, requires: ["fortune_1"], effect: { vault: .2 } }, { id: "fortune_4", cost: 2, requires: ["fortune_2"], effect: { streakMastery: .25 } }, { id: "fortune_5", cost: 2, requires: ["fortune_3"], effect: { daily: .1 } }, { id: "fortune_6", cost: 2, requires: ["fortune_4"], effect: { lossDust: 1 } }, { id: "fortune_7", cost: 3, requires: ["fortune_5", "fortune_6"], effect: { xp: .12, stardust: .12 } }, { id: "fortune_8", cost: 4, requires: ["fortune_7"], effect: { roundCapsule: 1 } },
@@ -522,19 +532,36 @@ export class ActivityEconomyService {
   }
 
   async sovereignStatus(user: DiscordUser) {
-    const progress = this.progressFor(user.id);
+    let progress = this.progressFor(user.id);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    return { migrated: progress.sovereignMigrated, marks: progress.sovereignMarks, chests: progress.sovereignChests, wallet: wallet.wallet, currency: wallet.currency };
+    progress = this.unlockSovereignMedals(progress, wallet.wallet);
+    this.state.users[user.id] = progress;
+    this.options.store.save(this.state);
+    return { ...this.publicSovereign(progress), wallet: wallet.wallet, currency: wallet.currency };
   }
 
-  async migrateSovereign(user: DiscordUser, marks: number, chests: number) {
+  async migrateSovereign(user: DiscordUser, marks: number, chests: number, source: Partial<{ stats: Record<string, SovereignStat>; medals: Record<string, number>; special: Partial<SovereignSpecial>; streak: number; bestStreak: number; prestige: number }> = {}) {
     const progress = this.progressFor(user.id);
     if (progress.sovereignMigrated) return this.sovereignStatus(user);
-    const next = { ...progress, sovereignMigrated: true, sovereignMarks: Math.min(9_999, Math.max(0, Math.floor(marks))), sovereignChests: Math.max(0, Math.floor(chests)) };
+    const next = this.unlockSovereignMedals({
+      ...progress,
+      sovereignMigrated: true,
+      sovereignMarks: Math.min(9_999, Math.max(0, Math.floor(marks))),
+      sovereignChests: Math.max(0, Math.floor(chests)),
+      sovereignStats: normalizeSovereignStats(source.stats),
+      sovereignMedals: normalizeSovereignMedals(source.medals),
+      sovereignSpecial: normalizeSovereignSpecial(source.special),
+      sovereignWinStreak: safeNonNegativeInteger(source.streak),
+      sovereignBestWinStreak: safeNonNegativeInteger(source.bestStreak),
+      sovereignPrestige: safeNonNegativeInteger(source.prestige)
+    });
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    return { migrated: true, marks: next.sovereignMarks, chests: next.sovereignChests, wallet: wallet.wallet, currency: wallet.currency };
+    const settled = this.unlockSovereignMedals(next, wallet.wallet);
+    this.state.users[user.id] = settled;
+    this.options.store.save(this.state);
+    return { ...this.publicSovereign(settled), wallet: wallet.wallet, currency: wallet.currency };
   }
 
   async openSovereignChest(user: DiscordUser) {
@@ -543,10 +570,10 @@ export class ActivityEconomyService {
     const chests = progress.sovereignChests + 1;
     const amount = [2_000, 3_000, 4_000, 6_000, 10_000][randomInt(5)]!;
     const result = await requestActivityAdjustment({ transactionId: `activity-chest-${user.id}-${chests}`, discordUserId: user.id, sessionId: `chest-${chests}`, operation: "credit", amount, reason: "chest" }, this.options.env, this.options.fetch);
-    const next = { ...progress, sovereignMarks: progress.sovereignMarks - 150, sovereignChests: chests };
+    const next = this.unlockSovereignMedals({ ...progress, sovereignMarks: progress.sovereignMarks - 150, sovereignChests: chests }, result.wallet);
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
-    return { amount, marks: next.sovereignMarks, chests, wallet: result.wallet, currency: result.currency };
+    return { amount, ...this.publicSovereign(next), wallet: result.wallet, currency: result.currency };
   }
 
   async artifactStatus(user: DiscordUser) {
@@ -1046,12 +1073,12 @@ export class ActivityEconomyService {
     }
     const score = progress.circuitScore + 500 + (progress.circuitStage + 1) * 350 + Math.max(0, Math.floor((round.payout - round.wager) / 20));
     const stage = progress.circuitStage + 1;
-    if (stage < progress.circuitRoute.length) return { progress: { ...progress, circuitStage: stage, circuitScore: score }, wallet: null as number | null, currency: "Ris" };
+    if (stage < progress.circuitRoute.length) return { progress: this.addSovereignMarks({ ...progress, circuitStage: stage, circuitScore: score }, 1), wallet: null as number | null, currency: "Ris" };
     const clears = progress.circuitClears + 1;
     const firstToday = progress.circuitClaimedDay !== progress.circuitDay;
     const amount = firstToday ? 8_000 : 1_500;
     const result = await requestActivityAdjustment({ transactionId: `activity-circuit-${user.id}-${progress.circuitDay}-${clears}`, discordUserId: user.id, sessionId: `circuit-${progress.circuitDay}-${clears}`, operation: "credit", amount, reason: "circuit" }, this.options.env, this.options.fetch);
-    return { progress: { ...progress, circuitActive: false, circuitStage: stage, circuitScore: score, circuitClears: clears, circuitBest: Math.max(progress.circuitBest, score), circuitClaimedDay: progress.circuitDay }, wallet: result.wallet, currency: result.currency };
+    return { progress: this.addSovereignMarks({ ...progress, circuitActive: false, circuitStage: stage, circuitScore: score, circuitClears: clears, circuitBest: Math.max(progress.circuitBest, score), circuitClaimedDay: progress.circuitDay }, 1 + (firstToday ? 12 : 3)), wallet: result.wallet, currency: result.currency };
   }
 
   private prepareOdysseyNodes(progress: ActivityProgress): ActivityProgress {
@@ -1084,9 +1111,58 @@ export class ActivityEconomyService {
     if (!progress.sovereignMigrated) return progress;
     const game = round.game ?? round.id.split("-", 1)[0] ?? "";
     if (!circuitGames.includes(game)) return progress;
-    const rounds = (progress.sovereignRounds[game] ?? 0) + 1;
-    const marks = Math.min(9_999, progress.sovereignMarks + (rounds % 2 === 0 ? 1 : 0) + (round.payout > round.wager ? 1 : 0));
-    return { ...progress, sovereignMarks: marks, sovereignRounds: { ...progress.sovereignRounds, [game]: rounds } };
+    const current = progress.sovereignStats[game] ?? { rounds: progress.sovereignRounds[game] ?? 0, wins: 0, best: 0, biggest: 0, scoreMax: 0 };
+    const won = round.payout > round.wager;
+    const stat: SovereignStat = {
+      rounds: current.rounds + 1,
+      wins: current.wins + (won ? 1 : 0),
+      best: Math.max(current.best, round.wager > 0 ? round.payout / round.wager : 0),
+      biggest: Math.max(current.biggest, round.payout),
+      scoreMax: Math.max(current.scoreMax, safeNonNegativeInteger(round.score))
+    };
+    const special = { ...progress.sovereignSpecial };
+    for (const [id, value] of Object.entries(round.sovereignEvents ?? {})) if (value && isSovereignSpecialId(id)) special[id] = true;
+    const streak = won ? progress.sovereignWinStreak + 1 : 0;
+    const next = this.addSovereignMarks({
+      ...progress,
+      sovereignStats: { ...progress.sovereignStats, [game]: stat },
+      sovereignRounds: { ...progress.sovereignRounds, [game]: stat.rounds },
+      sovereignSpecial: special,
+      sovereignWinStreak: streak,
+      sovereignBestWinStreak: Math.max(progress.sovereignBestWinStreak, streak)
+    }, (stat.rounds % 2 === 0 ? 1 : 0) + (won ? 1 : 0));
+    return this.unlockSovereignMedals(next);
+  }
+
+  private addSovereignMarks(progress: ActivityProgress, amount: number) {
+    if (!progress.sovereignMigrated || amount <= 0) return progress;
+    return { ...progress, sovereignMarks: Math.min(9_999, progress.sovereignMarks + Math.floor(amount)) };
+  }
+
+  private unlockSovereignMedals(progress: ActivityProgress, wallet?: number) {
+    if (!progress.sovereignMigrated) return progress;
+    const stats = progress.sovereignStats;
+    const stat = (game: string) => stats[game] ?? { rounds: 0, wins: 0, best: 0, biggest: 0, scoreMax: 0 };
+    const totalRounds = Object.values(stats).reduce((total, value) => total + value.rounds, 0);
+    const totalWins = Object.values(stats).reduce((total, value) => total + value.wins, 0);
+    const playedGames = Object.values(stats).filter((value) => value.rounds > 0).length;
+    const stars = circuitGames.reduce((total, game) => total + sovereignStars(stat(game)), 0);
+    const conditions: Record<string, boolean> = {
+      first: totalRounds >= 1, round25: totalRounds >= 25, round100: totalRounds >= 100, round500: totalRounds >= 500,
+      win10: totalWins >= 10, win50: totalWins >= 50, streak5: progress.sovereignBestWinStreak >= 5, streak10: progress.sovereignBestWinStreak >= 10,
+      games5: playedGames >= 5, games12: playedGames >= 12, games23: playedGames >= 23, stars10: stars >= 10, stars40: stars >= 40, stars80: stars >= 80, stars115: stars >= 115,
+      circuit1: progress.circuitClears >= 1, circuit7: progress.circuitClears >= 7, chest: progress.sovereignChests >= 1,
+      rich100: (wallet ?? -1) >= 100_000, rich1m: (wallet ?? -1) >= 1_000_000,
+      three: stat("threecard").wins >= 1, threeSF: progress.sovereignSpecial.threecardSF, derby: stat("derby").wins >= 1, underdog: progress.sovereignSpecial.derbyUnderdog,
+      ascent2: stat("ascent").best >= 2, ascent10: progress.sovereignSpecial.ascentTen, arcana: stat("arcana").wins >= 1, arcanaPerfect: progress.sovereignSpecial.arcanaPerfect,
+      darts180: stat("moonshot").scoreMax >= 180, darts300: progress.sovereignSpecial.moonshotPerfect, mines: stat("mines").wins >= 1,
+      tower: progress.sovereignSpecial.towerSummit, scratch: progress.sovereignSpecial.scratchWin, pvp: progress.duelWins >= 1,
+      collector: progress.artifactOwned.length >= 24, prestige: progress.sovereignPrestige >= 1
+    };
+    const added = sovereignMedalIds.filter((id) => conditions[id] && !progress.sovereignMedals[id]);
+    if (!added.length) return progress;
+    const now = Date.now();
+    return this.addSovereignMarks({ ...progress, sovereignMedals: { ...progress.sovereignMedals, ...Object.fromEntries(added.map((id) => [id, now])) } }, added.length * 2);
   }
 
   private advanceVault(progress: ActivityProgress, round: TrustedMissionRound, doubled: boolean): ActivityProgress {
@@ -1205,6 +1281,21 @@ export class ActivityEconomyService {
 
   private publicArtifacts(progress: ActivityProgress) {
     return { migrated: progress.artifactMigrated, owned: progress.artifactOwned, claimed: progress.artifactClaims, keys: progress.artifactKeys, fragments: progress.artifactFragments, opened: progress.artifactOpened, duplicates: progress.artifactDuplicates, shards: progress.artifactShards };
+  }
+
+  private publicSovereign(progress: ActivityProgress) {
+    return {
+      migrated: progress.sovereignMigrated,
+      marks: progress.sovereignMarks,
+      chests: progress.sovereignChests,
+      stats: progress.sovereignStats,
+      medals: progress.sovereignMedals,
+      special: progress.sovereignSpecial,
+      streak: progress.sovereignWinStreak,
+      bestStreak: progress.sovereignBestWinStreak,
+      prestige: progress.sovereignPrestige,
+      stars: circuitGames.reduce((total, game) => total + sovereignStars(progress.sovereignStats[game] ?? emptySovereignStat()), 0)
+    };
   }
 
   private publicTreasury(progress: ActivityProgress, wallet: number, currency: string) {
@@ -1410,6 +1501,12 @@ function normalizeProgress(value: unknown): ActivityProgress {
     sovereignMarks: Math.min(9_999, safeNonNegativeInteger(raw.sovereignMarks)),
     sovereignChests: safeNonNegativeInteger(raw.sovereignChests),
     sovereignRounds: normalizeSovereignRounds(raw.sovereignRounds),
+    sovereignStats: normalizeSovereignStats(raw.sovereignStats, raw.sovereignRounds),
+    sovereignMedals: normalizeSovereignMedals(raw.sovereignMedals),
+    sovereignSpecial: normalizeSovereignSpecial(raw.sovereignSpecial),
+    sovereignWinStreak: safeNonNegativeInteger(raw.sovereignWinStreak),
+    sovereignBestWinStreak: safeNonNegativeInteger(raw.sovereignBestWinStreak),
+    sovereignPrestige: safeNonNegativeInteger(raw.sovereignPrestige),
     artifactMigrated: raw.artifactMigrated === true,
     artifactOwned: Array.isArray(raw.artifactOwned) ? [...new Set(raw.artifactOwned.filter((id): id is string => typeof id === "string" && artifactItemIds.includes(id)))] : [],
     artifactClaims: Array.isArray(raw.artifactClaims) ? [...new Set(raw.artifactClaims.filter((id): id is string => typeof id === "string" && artifactSets.includes(id)))] : [],
@@ -1504,6 +1601,12 @@ function initialProgress(): ActivityProgress {
     sovereignMarks: 0,
     sovereignChests: 0,
     sovereignRounds: {},
+    sovereignStats: {},
+    sovereignMedals: {},
+    sovereignSpecial: emptySovereignSpecial(),
+    sovereignWinStreak: 0,
+    sovereignBestWinStreak: 0,
+    sovereignPrestige: 0,
     artifactMigrated: false,
     artifactOwned: [],
     artifactClaims: [],
@@ -1664,6 +1767,50 @@ function normalizeSovereignRounds(value: unknown): Record<string, number> {
   return Object.fromEntries(Object.entries(value).flatMap(([game, rounds]) => circuitGames.includes(game) && typeof rounds === "number" ? [[game, safeNonNegativeInteger(rounds)]] : []));
 }
 
+function emptySovereignStat(): SovereignStat {
+  return { rounds: 0, wins: 0, best: 0, biggest: 0, scoreMax: 0 };
+}
+
+function normalizeSovereignStats(value: unknown, legacyRounds?: unknown): Record<string, SovereignStat> {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const rounds = normalizeSovereignRounds(legacyRounds);
+  return Object.fromEntries(circuitGames.flatMap((game) => {
+    const source = raw[game];
+    if (!source || typeof source !== "object") return rounds[game] ? [[game, { ...emptySovereignStat(), rounds: rounds[game] }]] : [];
+    const stat = source as Partial<SovereignStat>;
+    return [[game, {
+      rounds: safeNonNegativeInteger(stat.rounds, rounds[game] ?? 0),
+      wins: safeNonNegativeInteger(stat.wins),
+      best: safeNonNegativeNumber(stat.best),
+      biggest: safeNonNegativeInteger(stat.biggest),
+      scoreMax: safeNonNegativeInteger(stat.scoreMax)
+    }]];
+  }));
+}
+
+function emptySovereignSpecial(): SovereignSpecial {
+  return { threecardSF: false, derbyUnderdog: false, ascentTen: false, arcanaPerfect: false, moonshotPerfect: false, towerSummit: false, scratchWin: false };
+}
+
+function isSovereignSpecialId(value: string): value is SovereignSpecialId {
+  return value === "threecardSF" || value === "derbyUnderdog" || value === "ascentTen" || value === "arcanaPerfect" || value === "moonshotPerfect" || value === "towerSummit" || value === "scratchWin";
+}
+
+function normalizeSovereignSpecial(value: unknown): SovereignSpecial {
+  const source = value && typeof value === "object" ? value as Partial<SovereignSpecial> : {};
+  return Object.fromEntries(Object.keys(emptySovereignSpecial()).map((id) => [id, source[id as SovereignSpecialId] === true])) as SovereignSpecial;
+}
+
+function normalizeSovereignMedals(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object") return {};
+  const source = value as Record<string, unknown>;
+  return Object.fromEntries(sovereignMedalIds.flatMap((id) => typeof source[id] === "number" && Number.isSafeInteger(source[id]) && source[id] >= 0 ? [[id, source[id]]] : []));
+}
+
+function sovereignStars(stat: SovereignStat): number {
+  return Number(stat.rounds >= 3) + Number(stat.rounds >= 10) + Number(stat.wins >= 3) + Number(stat.best >= 5) + Number(stat.rounds >= 30 && stat.wins >= 10);
+}
+
 function shuffle<T>(items: T[]): T[] {
   const copy = [...items];
   for (let index = copy.length - 1; index > 0; index -= 1) {
@@ -1701,6 +1848,10 @@ export function isPurchaseId(value: string): boolean {
 
 function safeNonNegativeInteger(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function safeNonNegativeNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 function jstDateKey(): string {

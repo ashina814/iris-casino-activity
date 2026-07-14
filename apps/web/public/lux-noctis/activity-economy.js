@@ -336,7 +336,8 @@
     let payload = await response.json().catch(() => null);
     if (refresh !== sovereignRefresh || !response.ok || !payload?.ok || !payload.sovereign || !app.sovereign) return;
     if (!payload.sovereign.migrated) {
-      response = await fetch("/api/economy/sovereign/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ marks: app.sovereign.data.marks || 0, chests: app.sovereign.data.chests || 0 }) });
+      const sovereign = app.sovereign.data;
+      response = await fetch("/api/economy/sovereign/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ marks: sovereign.marks || 0, chests: sovereign.chests || 0, stats: sovereign.stats || {}, medals: sovereign.medals || {}, special: sovereign.special || {}, streak: app.profile.data.streak?.current || 0, bestStreak: app.profile.data.streak?.best || 0, prestige: app.profile.data.ascension?.prestige || 0 }) });
       payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok || !payload.sovereign) return;
     }
@@ -347,6 +348,9 @@
     if (!sovereign || !app.sovereign) return;
     app.sovereign.data.marks = sovereign.marks;
     app.sovereign.data.chests = sovereign.chests;
+    if (sovereign.stats && typeof sovereign.stats === "object") app.sovereign.data.stats = sovereign.stats;
+    if (sovereign.medals && typeof sovereign.medals === "object") app.sovereign.data.medals = sovereign.medals;
+    if (sovereign.special && typeof sovereign.special === "object") app.sovereign.data.special = { ...app.sovereign.data.special, ...sovereign.special };
     if (Number.isInteger(sovereign.wallet) && sovereign.wallet >= 0) window.__IRIS_SET_WALLET?.(sovereign.wallet);
     app.profile.save();
     app.sovereign.updateAll();
@@ -355,13 +359,16 @@
 
   function snapshotSovereignResources() {
     if (!app.sovereign) return null;
-    return { marks: app.sovereign.data.marks, chests: app.sovereign.data.chests };
+    return structuredClone({ marks: app.sovereign.data.marks, chests: app.sovereign.data.chests, stats: app.sovereign.data.stats, medals: app.sovereign.data.medals, special: app.sovereign.data.special });
   }
 
   function restoreSovereignResources(snapshot) {
     if (!snapshot || !app.sovereign) return;
     app.sovereign.data.marks = snapshot.marks;
     app.sovereign.data.chests = snapshot.chests;
+    app.sovereign.data.stats = snapshot.stats;
+    app.sovereign.data.medals = snapshot.medals;
+    app.sovereign.data.special = snapshot.special;
   }
 
   async function refreshArtifacts() {

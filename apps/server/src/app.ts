@@ -334,6 +334,19 @@ export function createApp(options: CreateAppOptions = {}) {
     })
   );
 
+  app.post(
+    "/api/league/submit",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ room: partyRoomSchema }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Night League sync is invalid.");
+      const league = party.submitLeague(user.id, parsed.data.room);
+      if (!league) throw new AppError(403, "unauthorized", "Join the party room before syncing Night League.");
+      res.json({ ok: true, ...league });
+    })
+  );
+
   app.get("/api/party/events", (req, res) => {
     const user = getSession(req).user;
     const room = partyRoomSchema.safeParse(req.query.room);
@@ -785,6 +798,7 @@ async function recordMissionIfSettled(activityEconomy: ActivityEconomyService, p
 async function recordActivityRound(activityEconomy: ActivityEconomyService, party: PartyService, user: DiscordUser, round: Parameters<ActivityEconomyService["recordMissionRound"]>[1]) {
   await activityEconomy.recordMissionRound(user, round);
   if (round.payout > round.wager) party.recordTrustedWin(user.id, round.payout - round.wager);
+  party.recordTrustedRound(user.id, round.wager, round.payout);
 }
 
 function activityHelmetOptions(env: ServerEnv) {

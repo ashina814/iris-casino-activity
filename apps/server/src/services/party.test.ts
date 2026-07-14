@@ -51,4 +51,18 @@ describe("PartyService", () => {
     const restarted = new PartyService({ store });
     expect(restarted.canClaimCrown(user.id, "night-restart", crownId)).toBe(true);
   });
+
+  it("builds a persisted Night League only from trusted settled rounds", () => {
+    const store = new MemoryPartyStore();
+    const party = new PartyService({ store });
+    party.join(user, "night-league", appearance);
+    party.recordTrustedRound(user.id, 900, 1_800);
+
+    expect(party.submitLeague(user.id, "night-league")).toMatchObject({
+      league: [{ id: user.id, name: "Yuki", glyph: "R", score: 35, rounds: 1, wins: 1, bestReturn: 1_800 }]
+    });
+
+    const restarted = new PartyService({ store });
+    expect(restarted.submitLeague(user.id, "night-league")?.league[0]).toMatchObject({ score: 35, rounds: 1, wins: 1, bestReturn: 1_800 });
+  });
 });

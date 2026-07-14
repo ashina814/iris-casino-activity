@@ -176,6 +176,24 @@ describe("server API", () => {
     expect(event.body.feed[0]).toMatchObject({ text: "Yuki: OK" });
   });
 
+  it("returns the server-owned Night League after the user joins the room", async () => {
+    const agent = await authenticatedAgent();
+    await agent.post("/api/party/join").send({
+      room: "night-league",
+      appearance: { level: 7, game: "Lobby", glyph: "R" }
+    }).expect(200);
+
+    const synced = await agent.post("/api/league/submit").send({
+      room: "night-league",
+      score: 999_999_999,
+      rounds: 9_999,
+      wins: 9_999,
+      bestReturn: 999_999_999
+    }).expect(200);
+
+    expect(synced.body).toMatchObject({ ok: true, league: [] });
+  });
+
   it("converts a successful Economy API wallet response", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({ wallet: 12500, currency: "Ris" })

@@ -78,6 +78,15 @@ describe("ActivityEconomyService missions", () => {
     expect(JSON.parse(String(adjustment?.[1]?.body))).toMatchObject({ amount: 1500, reason: "odyssey" });
   });
 
+  it("settles a completed migrated album through RIS exactly once", async () => {
+    const store = new MemoryStore();
+    store.save({ users: { [user.id]: { collectionMigrated: true, collectionOwned: ["nocturne_avatar", "nocturne_frame", "nocturne_chip", "nocturne_back", "nocturne_aura", "nocturne_emote"], albumClaims: [] } } });
+    const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 8000, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+    expect(await service.claimAlbum(user, "nocturne")).toMatchObject({ amount: 3000, dust: 400, shards: 150, wallet: 8000 });
+    await expect(service.claimAlbum(user, "nocturne")).rejects.toMatchObject({ code: "casino_transaction_conflict" });
+  });
+
   it("awards a server-recorded daily mission once even when its round is retried", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
       if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 5600, currency: "Ris" }), { headers: { "content-type": "application/json" } });

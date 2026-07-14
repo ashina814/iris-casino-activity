@@ -60,6 +60,9 @@ type ActivityProgress = {
   odysseyFailed: number;
   odysseyBestFloor: number;
   odysseyBestScore: number;
+  collectionMigrated: boolean;
+  collectionOwned: string[];
+  albumClaims: string[];
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -100,6 +103,9 @@ const weeklyPool: Omit<WeeklyProgress, "progress" | "claimed" | "games">[] = [
 const circuitGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch", "threecard", "derby", "ascent", "arcana", "moonshot"];
 const odysseyGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch"];
 const odysseyBoons: OdysseyBoon[] = ["life", "coins", "key", "shield", "fame", "score"];
+const collectionSeries = ["nocturne", "aurora", "crimson", "celestial", "obsidian", "eclipse", "lunar", "infernal", "verdant", "royal", "void", "solar"];
+const collectionTypes = ["avatar", "frame", "chip", "back", "aura", "emote"];
+const collectionItemIds = collectionSeries.flatMap((series) => collectionTypes.map((type) => `${series}_${type}`));
 
 const adjustmentResponseSchema = z.object({
   ok: z.literal(true),
@@ -300,6 +306,34 @@ export class ActivityEconomyService {
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
     return this.publicOdyssey(next);
+  }
+
+  async albumStatus(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { migrated: progress.collectionMigrated, owned: progress.collectionOwned, claimed: progress.albumClaims, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async migrateAlbumCollection(user: DiscordUser, owned: string[]) {
+    const progress = this.progressFor(user.id);
+    if (progress.collectionMigrated) return this.albumStatus(user);
+    const next = { ...progress, collectionMigrated: true, collectionOwned: [...new Set(owned.filter((id) => collectionItemIds.includes(id)))], albumClaims: progress.albumClaims };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { migrated: true, owned: next.collectionOwned, claimed: next.albumClaims, wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async claimAlbum(user: DiscordUser, series: string) {
+    const progress = this.progressFor(user.id);
+    if (!progress.collectionMigrated || !collectionSeries.includes(series) || progress.albumClaims.includes(series)) throw new AppError(409, "casino_transaction_conflict", "Album reward is unavailable.");
+    const required = collectionTypes.map((type) => `${series}_${type}`);
+    if (!required.every((id) => progress.collectionOwned.includes(id))) throw new AppError(409, "casino_transaction_conflict", "Album is incomplete.");
+    const result = await requestActivityAdjustment({ transactionId: `activity-album-${user.id}-${series}`, discordUserId: user.id, sessionId: `album-${series}`, operation: "credit", amount: 3_000, reason: "album" }, this.options.env, this.options.fetch);
+    const next = { ...progress, albumClaims: [...progress.albumClaims, series] };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { series, amount: 3_000, dust: 400, shards: 150, wallet: result.wallet, currency: result.currency };
   }
 
   async claimMystery(user: DiscordUser, offerId: string, index: number) {
@@ -861,7 +895,10 @@ function normalizeProgress(value: unknown): ActivityProgress {
     odysseyCompleted: safeNonNegativeInteger(raw.odysseyCompleted),
     odysseyFailed: safeNonNegativeInteger(raw.odysseyFailed),
     odysseyBestFloor: Math.min(12, safeNonNegativeInteger(raw.odysseyBestFloor)),
-    odysseyBestScore: safeNonNegativeInteger(raw.odysseyBestScore)
+    odysseyBestScore: safeNonNegativeInteger(raw.odysseyBestScore),
+    collectionMigrated: raw.collectionMigrated === true,
+    collectionOwned: Array.isArray(raw.collectionOwned) ? [...new Set(raw.collectionOwned.filter((id): id is string => typeof id === "string" && collectionItemIds.includes(id)))] : [],
+    albumClaims: Array.isArray(raw.albumClaims) ? [...new Set(raw.albumClaims.filter((id): id is string => typeof id === "string" && collectionSeries.includes(id)))] : []
   };
 }
 
@@ -916,7 +953,10 @@ function initialProgress(): ActivityProgress {
     odysseyCompleted: 0,
     odysseyFailed: 0,
     odysseyBestFloor: 0,
-    odysseyBestScore: 0
+    odysseyBestScore: 0,
+    collectionMigrated: false,
+    collectionOwned: [],
+    albumClaims: []
   };
 }
 

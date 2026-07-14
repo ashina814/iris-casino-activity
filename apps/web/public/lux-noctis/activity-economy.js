@@ -16,6 +16,7 @@
   let seasonRefresh = 0;
   let circuitRefresh = 0;
   let odysseyRefresh = 0;
+  let albumRefresh = 0;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -184,6 +185,26 @@
     app.profile.save();
     app.eternal.updateAll();
     if (app.eternal.tab === "odyssey" && app.activeModal?.id === "eternalModal") app.eternal.render("odyssey");
+  }
+
+  async function refreshAlbums() {
+    const refresh = ++albumRefresh;
+    let response = await fetch("/api/economy/albums", { credentials: "include" });
+    let payload = await response.json().catch(() => null);
+    if (refresh !== albumRefresh || !response.ok || !payload?.ok || !payload.albums || !app.ascension) return;
+    if (!payload.albums.migrated) {
+      response = await fetch("/api/economy/albums/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ owned: Object.keys(app.ascension.data.collection.owned || {}) }) });
+      payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.albums) return;
+    }
+    applyAlbums(payload.albums);
+  }
+
+  function applyAlbums(albums) {
+    if (!albums || !app.ascension) return;
+    for (const series of albums.claimed || []) app.ascension.data.collection.albums[series] = app.ascension.data.collection.albums[series] || Date.now();
+    if (Number.isInteger(albums.wallet) && albums.wallet >= 0) window.__IRIS_SET_WALLET?.(albums.wallet);
+    app.profile.save();
   }
 
   function applyVault(vault) {
@@ -396,6 +417,7 @@
     void refreshSeason();
     void refreshCircuit();
     void refreshOdyssey();
+    void refreshAlbums();
     refreshVault();
     refreshNightEvent();
     return result;
@@ -480,6 +502,24 @@
     };
     app.ascension.claimAllSeason = async function () {
       for (let tier = 1; tier <= this.seasonTier(); tier += 1) if (!this.data.season.claimed[tier]) await this.claimSeason(tier);
+    };
+    app.ascension.claimAlbum = async function (series) {
+      const response = await fetch(`/api/economy/albums/${encodeURIComponent(series)}/claim`, { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.album) {
+        void refreshAlbums();
+        return;
+      }
+      const album = payload.album;
+      this.data.collection.albums[series] = Date.now();
+      this.addStardust(album.dust, false);
+      this.data.crownShards += album.shards;
+      window.__IRIS_SET_WALLET?.(album.wallet);
+      this.app.profile.save();
+      this.app.audio.play("bigwin");
+      this.app.celebration.burst(.8);
+      this.renderCollection("albums");
+      this.updateAll();
     };
     app.ascension.maybeMysteryDoor = function () {
       if (!this.app.activeModal) void refreshMystery(true);
@@ -601,6 +641,7 @@
   void refreshSeason();
   void refreshCircuit();
   void refreshOdyssey();
+  void refreshAlbums();
   refreshVault();
   refreshNightEvent();
 })();

@@ -275,6 +275,23 @@
     app.profile.save();
   }
 
+  function snapshotArtifactResources() {
+    if (!app.eternal) return null;
+    const artifacts = app.eternal.data.artifacts;
+    return { keys: app.eternal.data.keys, fragments: app.eternal.data.keyFragments, owned: { ...artifacts.owned }, opened: artifacts.opened, duplicates: artifacts.duplicates, shards: artifacts.shards };
+  }
+
+  function restoreArtifactResources(snapshot) {
+    if (!snapshot || !app.eternal) return;
+    const artifacts = app.eternal.data.artifacts;
+    app.eternal.data.keys = snapshot.keys;
+    app.eternal.data.keyFragments = snapshot.fragments;
+    artifacts.owned = snapshot.owned;
+    artifacts.opened = snapshot.opened;
+    artifacts.duplicates = snapshot.duplicates;
+    artifacts.shards = snapshot.shards;
+  }
+
   async function claimArtifactSet(eternal, set) {
     const response = await fetch(`/api/economy/artifacts/${encodeURIComponent(set)}/claim`, { method: "POST", credentials: "include" });
     const payload = await response.json().catch(() => null);
@@ -682,11 +699,14 @@
   if (app.sovereign) {
     const localCircuitRound = app.sovereign.onRound;
     app.sovereign.onRound = function (payload) {
+      const artifactResources = snapshotArtifactResources();
       const active = this.data.circuit.active;
       this.data.circuit.active = false;
       const result = localCircuitRound.call(this, payload);
       this.data.circuit.active = active;
+      restoreArtifactResources(artifactResources);
       void refreshCircuit();
+      void refreshArtifacts();
       return result;
     };
     app.sovereign.startCircuit = async function () {
@@ -713,6 +733,14 @@
   }
   if (app.eternal) {
     app.eternal.handleOdysseyRound = function () {};
+    const localEternalRound = app.eternal.onRound;
+    app.eternal.onRound = function (payload) {
+      const artifactResources = snapshotArtifactResources();
+      const result = localEternalRound.call(this, payload);
+      restoreArtifactResources(artifactResources);
+      void refreshArtifacts();
+      return result;
+    };
     app.eternal.grantArtifact = function () { return null; };
     app.eternal.openArtifactVault = async function () {
       const response = await fetch("/api/economy/artifacts/open", { method: "POST", credentials: "include" });

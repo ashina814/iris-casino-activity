@@ -46,6 +46,20 @@ type ActivityProgress = {
   circuitClears: number;
   circuitBest: number;
   circuitClaimedDay: string;
+  odysseyActive: boolean;
+  odysseyRunId: string;
+  odysseyFloor: number;
+  odysseyLives: number;
+  odysseyShields: number;
+  odysseyScore: number;
+  odysseyNodes: OdysseyNode[];
+  odysseySelected: number | null;
+  odysseyChoices: OdysseyBoon[];
+  odysseyBoons: OdysseyBoon[];
+  odysseyCompleted: number;
+  odysseyFailed: number;
+  odysseyBestFloor: number;
+  odysseyBestScore: number;
 };
 
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
@@ -56,6 +70,8 @@ type MysteryReward = { type: "coins" | "dust" | "capsule" | "tokens"; amount: nu
 type MysteryOffer = { id: string; rewards: MysteryReward[]; claimed: boolean };
 type SeasonReward = { type: "coins" | "dust" | "tokens" | "shards" | "capsule"; amount: number };
 type CircuitNode = { game: string; type: "play" | "win" | "return"; target: number };
+type OdysseyNode = { game: string; type: "play" | "win" | "wager"; target: number; boss: boolean };
+type OdysseyBoon = "life" | "coins" | "key" | "shield" | "fame" | "score";
 type NightEventId = "stardust" | "vault" | "echo" | "crown";
 export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; events?: Partial<Record<MissionEvent, number>> };
 
@@ -82,6 +98,8 @@ const weeklyPool: Omit<WeeklyProgress, "progress" | "claimed" | "games">[] = [
   { id: "variety", event: "variety", target: 10, reward: 3000 }
 ];
 const circuitGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch", "threecard", "derby", "ascent", "arcana", "moonshot"];
+const odysseyGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch"];
+const odysseyBoons: OdysseyBoon[] = ["life", "coins", "key", "shield", "fame", "score"];
 
 const adjustmentResponseSchema = z.object({
   ok: z.literal(true),
@@ -215,6 +233,73 @@ export class ActivityEconomyService {
     this.options.store.save(this.state);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
     return { ...this.publicCircuit(next), wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async odysseyStatus(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { ...this.publicOdyssey(progress), wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async startOdyssey(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    if (progress.odysseyActive) return this.odysseyStatus(user);
+    const next = this.prepareOdysseyNodes({ ...progress, odysseyActive: true, odysseyRunId: `ody-${Date.now()}-${randomInt(1_000_000)}`, odysseyFloor: 1, odysseyLives: 3, odysseyShields: 0, odysseyScore: 0, odysseySelected: null, odysseyChoices: [], odysseyBoons: [] });
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return { ...this.publicOdyssey(next), wallet: wallet.wallet, currency: wallet.currency };
+  }
+
+  async selectOdysseyNode(user: DiscordUser, index: number) {
+    const progress = this.progressFor(user.id);
+    if (!progress.odysseyActive || progress.odysseyChoices.length || !Number.isInteger(index) || index < 0 || index >= progress.odysseyNodes.length) throw new AppError(409, "casino_transaction_conflict", "Odyssey route is unavailable.");
+    const next = { ...progress, odysseySelected: index };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return this.publicOdyssey(next);
+  }
+
+  async chooseOdysseyBoon(user: DiscordUser, boon: OdysseyBoon) {
+    const progress = this.progressFor(user.id);
+    if (!progress.odysseyActive || !progress.odysseyChoices.includes(boon)) throw new AppError(409, "casino_transaction_conflict", "Odyssey boon is unavailable.");
+    let next: ActivityProgress = { ...progress, odysseyChoices: [], odysseyBoons: [...progress.odysseyBoons, boon] };
+    let wallet: number | null = null;
+    let currency = "Ris";
+    if (boon === "life") next = { ...next, odysseyLives: Math.min(5, next.odysseyLives + 1) };
+    if (boon === "shield") next = { ...next, odysseyShields: next.odysseyShields + 1 };
+    if (boon === "score") next = { ...next, odysseyScore: Math.floor(next.odysseyScore * 1.25 + 300) };
+    if (boon === "coins") {
+      const result = await requestActivityAdjustment({ transactionId: `activity-odyssey-boon-${user.id}-${next.odysseyRunId}-${next.odysseyBoons.length}`, discordUserId: user.id, sessionId: `odyssey-${next.odysseyRunId}-boon-${next.odysseyBoons.length}`, operation: "credit", amount: 1_500, reason: "odyssey" }, this.options.env, this.options.fetch);
+      wallet = result.wallet;
+      currency = result.currency;
+    }
+    if (next.odysseyFloor >= 12) {
+      const amount = Math.min(12_000, Math.floor(4_000 + next.odysseyScore * 2));
+      const result = await requestActivityAdjustment({ transactionId: `activity-odyssey-complete-${user.id}-${next.odysseyRunId}`, discordUserId: user.id, sessionId: `odyssey-${next.odysseyRunId}-complete`, operation: "credit", amount, reason: "odyssey" }, this.options.env, this.options.fetch);
+      wallet = result.wallet;
+      currency = result.currency;
+      next = { ...next, odysseyActive: false, odysseyCompleted: next.odysseyCompleted + 1, odysseyBestScore: Math.max(next.odysseyBestScore, next.odysseyScore) };
+    } else {
+      next = this.prepareOdysseyNodes({ ...next, odysseyFloor: next.odysseyFloor + 1, odysseySelected: null });
+    }
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    if (wallet === null) {
+      const current = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+      wallet = current.wallet;
+      currency = current.currency;
+    }
+    return { ...this.publicOdyssey(next), boon, wallet, currency };
+  }
+
+  abandonOdyssey(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    if (!progress.odysseyActive) return this.publicOdyssey(progress);
+    const next = { ...progress, odysseyActive: false, odysseySelected: null, odysseyChoices: [], odysseyFailed: progress.odysseyFailed + 1, odysseyBestScore: Math.max(progress.odysseyBestScore, progress.odysseyScore) };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return this.publicOdyssey(next);
   }
 
   async claimMystery(user: DiscordUser, offerId: string, index: number) {
@@ -372,6 +457,7 @@ export class ActivityEconomyService {
       wallet = circuit.wallet;
       currency = circuit.currency;
     }
+    progress = this.advanceOdyssey(progress, round);
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -575,6 +661,32 @@ export class ActivityEconomyService {
     return { progress: { ...progress, circuitActive: false, circuitStage: stage, circuitScore: score, circuitClears: clears, circuitBest: Math.max(progress.circuitBest, score), circuitClaimedDay: progress.circuitDay }, wallet: result.wallet, currency: result.currency };
   }
 
+  private prepareOdysseyNodes(progress: ActivityProgress): ActivityProgress {
+    const boss = [4, 8, 12].includes(progress.odysseyFloor);
+    const nodes = shuffle(odysseyGames).slice(0, 3).map((game): OdysseyNode => {
+      const type = boss ? "win" : (["play", "win", "wager"] as const)[randomInt(3)]!;
+      return { game, type, target: type === "wager" ? Math.min(10_000, 500 + progress.odysseyFloor * 500) : 1, boss };
+    });
+    return { ...progress, odysseyNodes: nodes, odysseySelected: null };
+  }
+
+  private advanceOdyssey(progress: ActivityProgress, round: TrustedMissionRound): ActivityProgress {
+    if (!progress.odysseyActive || progress.odysseyChoices.length || progress.odysseySelected === null) return progress;
+    const node = progress.odysseyNodes[progress.odysseySelected];
+    const game = round.game ?? round.id.split("-", 1)[0] ?? "";
+    if (!node || node.game !== game) return progress;
+    const success = node.type === "play" ? true : node.type === "win" ? round.payout > round.wager : round.wager >= node.target;
+    const bestFloor = Math.max(progress.odysseyBestFloor, progress.odysseyFloor);
+    if (success) {
+      const score = progress.odysseyScore + 200 + progress.odysseyFloor * 100 + Math.max(0, Math.floor((round.payout - round.wager) / 50));
+      return { ...progress, odysseyScore: score, odysseyBestFloor: bestFloor, odysseySelected: null, odysseyChoices: shuffle(odysseyBoons).slice(0, 3) };
+    }
+    if (progress.odysseyShields > 0) return this.prepareOdysseyNodes({ ...progress, odysseyShields: progress.odysseyShields - 1, odysseySelected: null, odysseyBestFloor: bestFloor });
+    const lives = Math.max(0, progress.odysseyLives - 1);
+    if (lives === 0) return { ...progress, odysseyActive: false, odysseyLives: 0, odysseySelected: null, odysseyFailed: progress.odysseyFailed + 1, odysseyBestFloor: bestFloor, odysseyBestScore: Math.max(progress.odysseyBestScore, progress.odysseyScore) };
+    return this.prepareOdysseyNodes({ ...progress, odysseyLives: lives, odysseySelected: null, odysseyBestFloor: bestFloor });
+  }
+
   private advanceVault(progress: ActivityProgress, round: TrustedMissionRound, doubled: boolean): ActivityProgress {
     if (progress.vaultReady) return progress;
     const baseGain = Math.min(10, Math.max(1, 2 + Math.floor(round.wager / 2500) + (round.payout > round.wager ? 1 : 0)));
@@ -640,6 +752,10 @@ export class ActivityEconomyService {
 
   private publicCircuit(progress: ActivityProgress) {
     return { day: progress.circuitDay, active: progress.circuitActive, stage: progress.circuitStage, lives: progress.circuitLives, score: progress.circuitScore, route: progress.circuitRoute, clears: progress.circuitClears, best: progress.circuitBest, claimedDay: progress.circuitClaimedDay };
+  }
+
+  private publicOdyssey(progress: ActivityProgress) {
+    return { active: progress.odysseyActive, runId: progress.odysseyRunId, floor: progress.odysseyFloor, lives: progress.odysseyLives, shields: progress.odysseyShields, score: progress.odysseyScore, nodes: progress.odysseyNodes, selected: progress.odysseySelected, rewardChoices: progress.odysseyChoices, boons: progress.odysseyBoons, completed: progress.odysseyCompleted, failed: progress.odysseyFailed, bestFloor: progress.odysseyBestFloor, bestScore: progress.odysseyBestScore };
   }
 }
 
@@ -731,7 +847,21 @@ function normalizeProgress(value: unknown): ActivityProgress {
     circuitRoute: normalizeCircuitRoute(raw.circuitRoute),
     circuitClears: safeNonNegativeInteger(raw.circuitClears),
     circuitBest: safeNonNegativeInteger(raw.circuitBest),
-    circuitClaimedDay: typeof raw.circuitClaimedDay === "string" ? raw.circuitClaimedDay : ""
+    circuitClaimedDay: typeof raw.circuitClaimedDay === "string" ? raw.circuitClaimedDay : "",
+    odysseyActive: raw.odysseyActive === true,
+    odysseyRunId: typeof raw.odysseyRunId === "string" ? raw.odysseyRunId : "",
+    odysseyFloor: Math.min(12, Math.max(1, safeNonNegativeInteger(raw.odysseyFloor, 1))),
+    odysseyLives: Math.min(5, safeNonNegativeInteger(raw.odysseyLives, 3)),
+    odysseyShields: safeNonNegativeInteger(raw.odysseyShields),
+    odysseyScore: safeNonNegativeInteger(raw.odysseyScore),
+    odysseyNodes: normalizeOdysseyNodes(raw.odysseyNodes),
+    odysseySelected: typeof raw.odysseySelected === "number" && Number.isInteger(raw.odysseySelected) && raw.odysseySelected >= 0 && raw.odysseySelected < 3 ? raw.odysseySelected : null,
+    odysseyChoices: normalizeOdysseyBoons(raw.odysseyChoices),
+    odysseyBoons: normalizeOdysseyBoons(raw.odysseyBoons),
+    odysseyCompleted: safeNonNegativeInteger(raw.odysseyCompleted),
+    odysseyFailed: safeNonNegativeInteger(raw.odysseyFailed),
+    odysseyBestFloor: Math.min(12, safeNonNegativeInteger(raw.odysseyBestFloor)),
+    odysseyBestScore: safeNonNegativeInteger(raw.odysseyBestScore)
   };
 }
 
@@ -772,7 +902,21 @@ function initialProgress(): ActivityProgress {
     circuitRoute: [],
     circuitClears: 0,
     circuitBest: 0,
-    circuitClaimedDay: ""
+    circuitClaimedDay: "",
+    odysseyActive: false,
+    odysseyRunId: "",
+    odysseyFloor: 1,
+    odysseyLives: 3,
+    odysseyShields: 0,
+    odysseyScore: 0,
+    odysseyNodes: [],
+    odysseySelected: null,
+    odysseyChoices: [],
+    odysseyBoons: [],
+    odysseyCompleted: 0,
+    odysseyFailed: 0,
+    odysseyBestFloor: 0,
+    odysseyBestScore: 0
   };
 }
 
@@ -865,6 +1009,20 @@ function normalizeCircuitRoute(value: unknown): CircuitNode[] {
     if (!circuitGames.includes(entry.game ?? "") || (entry.type !== "play" && entry.type !== "win" && entry.type !== "return") || typeof entry.target !== "number") return [];
     return [{ game: entry.game!, type: entry.type, target: entry.target }];
   });
+}
+
+function normalizeOdysseyNodes(value: unknown): OdysseyNode[] {
+  if (!Array.isArray(value) || value.length !== 3) return [];
+  return value.flatMap((node): OdysseyNode[] => {
+    if (!node || typeof node !== "object") return [];
+    const entry = node as Partial<OdysseyNode>;
+    if (!odysseyGames.includes(entry.game ?? "") || (entry.type !== "play" && entry.type !== "win" && entry.type !== "wager") || typeof entry.target !== "number" || typeof entry.boss !== "boolean") return [];
+    return [{ game: entry.game!, type: entry.type, target: entry.target, boss: entry.boss }];
+  });
+}
+
+function normalizeOdysseyBoons(value: unknown): OdysseyBoon[] {
+  return Array.isArray(value) ? value.filter((boon): boon is OdysseyBoon => boon === "life" || boon === "coins" || boon === "key" || boon === "shield" || boon === "fame" || boon === "score").slice(0, 24) : [];
 }
 
 function shuffle<T>(items: T[]): T[] {

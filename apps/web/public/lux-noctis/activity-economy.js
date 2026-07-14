@@ -15,6 +15,7 @@
   let mysteryBusy = false;
   let seasonRefresh = 0;
   let circuitRefresh = 0;
+  let odysseyRefresh = 0;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -165,6 +166,24 @@
     app.profile.save();
     app.sovereign.updateAll();
     if (!document.querySelector("#sovereignModal")?.hidden) app.sovereign.render();
+  }
+
+  async function refreshOdyssey() {
+    const refresh = ++odysseyRefresh;
+    const response = await fetch("/api/economy/odyssey", { credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (refresh !== odysseyRefresh || !response.ok || !payload?.ok || !payload.odyssey || !app.eternal) return;
+    applyOdyssey(payload.odyssey);
+  }
+
+  function applyOdyssey(odyssey) {
+    if (!odyssey || !app.eternal) return;
+    const local = app.eternal.data.odyssey;
+    Object.assign(local, { ...odyssey, nodes: (odyssey.nodes || []).map((node) => ({ ...node, icon: app.gameMeta?.(node.game)?.icon || "?" })) });
+    if (Number.isInteger(odyssey.wallet) && odyssey.wallet >= 0) window.__IRIS_SET_WALLET?.(odyssey.wallet);
+    app.profile.save();
+    app.eternal.updateAll();
+    if (app.eternal.tab === "odyssey" && app.activeModal?.id === "eternalModal") app.eternal.render("odyssey");
   }
 
   function applyVault(vault) {
@@ -376,6 +395,7 @@
     void refreshMystery(true);
     void refreshSeason();
     void refreshCircuit();
+    void refreshOdyssey();
     refreshVault();
     refreshNightEvent();
     return result;
@@ -528,6 +548,50 @@
       this.render();
     };
   }
+  if (app.eternal) {
+    app.eternal.handleOdysseyRound = function () {};
+    app.eternal.startOdyssey = async function () {
+      const response = await fetch("/api/economy/odyssey/start", { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.odyssey) return;
+      applyOdyssey(payload.odyssey);
+      this.app.audio.play("chime");
+      this.render("odyssey");
+    };
+    app.eternal.selectOdysseyNode = async function (index) {
+      const response = await fetch("/api/economy/odyssey/select", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ index }) });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.odyssey) return;
+      applyOdyssey(payload.odyssey);
+      const node = payload.odyssey.nodes[index];
+      if (!node) return;
+      this.app.closeModal();
+      this.app.openGame(node.game);
+    };
+    app.eternal.chooseOdysseyBoon = async function (boon) {
+      const floor = this.odyssey.floor;
+      const response = await fetch("/api/economy/odyssey/boon", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ boon }) });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.odyssey) return;
+      const result = payload.odyssey;
+      if (boon === "key") this.data.keys += 1;
+      if (boon === "fame") this.addRenown(500);
+      if (floor >= 12 && !result.active) {
+        this.data.keys += 3;
+        this.grantArtifact("mythic", false);
+      }
+      applyOdyssey(result);
+      this.app.audio.play(boon === "coins" || floor >= 12 ? "bigwin" : "chime");
+      this.render("odyssey");
+    };
+    app.eternal.abandonOdyssey = async function () {
+      const response = await fetch("/api/economy/odyssey/abandon", { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.odyssey) return;
+      applyOdyssey(payload.odyssey);
+      this.render("odyssey");
+    };
+  }
   requestTreasury("/api/economy/treasury", "GET")
     .then(applyTreasuryState)
     .catch(() => {});
@@ -536,6 +600,7 @@
   void refreshMystery();
   void refreshSeason();
   void refreshCircuit();
+  void refreshOdyssey();
   refreshVault();
   refreshNightEvent();
 })();

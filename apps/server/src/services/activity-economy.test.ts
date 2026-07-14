@@ -67,6 +67,17 @@ describe("ActivityEconomyService missions", () => {
     expect(JSON.parse(String(adjustment?.[1]?.body))).toMatchObject({ amount: 8000, reason: "circuit" });
   });
 
+  it("settles an Odyssey coin boon from server-owned run state", async () => {
+    const store = new MemoryStore();
+    store.save({ users: { [user.id]: { odysseyActive: true, odysseyRunId: "ody-test", odysseyFloor: 1, odysseyLives: 3, odysseyShields: 0, odysseyScore: 0, odysseyNodes: [], odysseySelected: null, odysseyChoices: ["coins"], odysseyBoons: [], odysseyCompleted: 0, odysseyFailed: 0, odysseyBestFloor: 0, odysseyBestScore: 0 } } });
+    const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => new Response(JSON.stringify(String(url).includes("adjustments") ? { ok: true, wallet: 6500, currency: "Ris" } : { wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+    expect(await service.chooseOdysseyBoon(user, "coins")).toMatchObject({ boon: "coins", wallet: 6500 });
+    await expect(service.chooseOdysseyBoon(user, "coins")).rejects.toMatchObject({ code: "casino_transaction_conflict" });
+    const adjustment = fetchMock.mock.calls.find(([, init]) => String(init?.body).includes('"reason":"odyssey"'));
+    expect(JSON.parse(String(adjustment?.[1]?.body))).toMatchObject({ amount: 1500, reason: "odyssey" });
+  });
+
   it("awards a server-recorded daily mission once even when its round is retried", async () => {
     const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
       if (String(url).includes("/activity/adjustments")) return new Response(JSON.stringify({ ok: true, wallet: 5600, currency: "Ris" }), { headers: { "content-type": "application/json" } });

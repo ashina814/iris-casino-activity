@@ -3,6 +3,15 @@
   const cluster = document.querySelector(".wallet-cluster");
   if (!app || !cluster) return;
 
+  // Keep the legacy node for the base UI renderer, but never display its local balance in Activity mode.
+  const legacyWallet = cluster.querySelector(".wallet");
+  if (legacyWallet) {
+    legacyWallet.hidden = true;
+    legacyWallet.setAttribute("aria-hidden", "true");
+  }
+  app.profile.data.balance = 0;
+  app.updateHud();
+
   function setWallet(wallet) {
     if (!Number.isInteger(wallet) || wallet < 0) return;
 

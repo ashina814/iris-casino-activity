@@ -79,6 +79,12 @@ type ActivityProgress = {
   sovereignWinStreak: number;
   sovereignBestWinStreak: number;
   sovereignPrestige: number;
+  eternalMigrated: boolean;
+  eternalRenown: EternalRenown;
+  eternalDistricts: Record<EternalDistrictId, EternalDistrict>;
+  eternalDealers: Record<EternalDealerId, EternalDealer>;
+  eternalOmen: EternalOmen;
+  eternalStats: EternalStats;
   artifactMigrated: boolean;
   artifactOwned: string[];
   artifactClaims: string[];
@@ -123,6 +129,15 @@ type ConstellationNode = { id: string; cost: number; requires?: string[]; effect
 type SovereignStat = { rounds: number; wins: number; best: number; biggest: number; scoreMax: number };
 type SovereignSpecialId = "threecardSF" | "derbyUnderdog" | "ascentTen" | "arcanaPerfect" | "moonshotPerfect" | "towerSummit" | "scratchWin";
 type SovereignSpecial = Record<SovereignSpecialId, boolean>;
+type EternalDistrictId = "cards" | "wheels" | "dice" | "oracles" | "vaults";
+type EternalDealerId = "selene" | "cain" | "aurelia" | "vesper" | "obsidian" | "lyra" | "nyx" | "oracle";
+type EternalTalentId = "fame-0" | "fame-1" | "fame-2" | "fame-3" | "fame-4" | "fame-5" | "bond-0" | "bond-1" | "bond-2" | "bond-3" | "bond-4" | "bond-5" | "relic-0" | "relic-1" | "relic-2" | "relic-3" | "relic-4" | "relic-5" | "odyssey-0" | "odyssey-1" | "odyssey-2" | "odyssey-3" | "odyssey-4" | "odyssey-5" | "league-0" | "league-1" | "league-2" | "league-3" | "league-4" | "league-5";
+type EternalOmenId = "renown" | "relic" | "bond" | "odyssey" | "league" | "keys" | "raid" | "all";
+type EternalRenown = { level: number; xp: number; totalXp: number; points: number; nodes: Partial<Record<EternalTalentId, number>> };
+type EternalDistrict = { level: number; xp: number; rounds: number; wins: number };
+type EternalDealer = { level: number; xp: number; rounds: number; chapters: number };
+type EternalOmen = { active: EternalOmenId | null; remaining: number; nextIn: number };
+type EternalStats = { rounds: number; newGames: number; holdemWins: number; warWins: number; bingos: number; towerSummits: number; scratchWins: number; artifactsFound: number; odysseyClears: number };
 export type TrustedMissionRound = { id: string; game?: string; wager: number; payout: number; masteryXp?: number; events?: Partial<Record<MissionEvent, number>>; weeklyEvents?: Partial<Record<WeeklyEvent, number>>; score?: number; sovereignEvents?: Partial<Record<SovereignSpecialId, boolean>> };
 
 type ActivityProgressState = {
@@ -153,6 +168,10 @@ const weeklyPool: Omit<WeeklyProgress, "progress" | "claimed" | "games">[] = [
 ];
 const circuitGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch", "threecard", "derby", "ascent", "arcana", "moonshot"];
 const sovereignMedalIds = ["first", "round25", "round100", "round500", "win10", "win50", "streak5", "streak10", "games5", "games12", "games23", "stars10", "stars40", "stars80", "stars115", "circuit1", "circuit7", "chest", "rich100", "rich1m", "three", "threeSF", "derby", "underdog", "ascent2", "ascent10", "arcana", "arcanaPerfect", "darts180", "darts300", "mines", "tower", "scratch", "pvp", "collector", "prestige"] as const;
+const eternalDistrictGames: Record<EternalDistrictId, string[]> = { cards: ["blackjack", "poker", "hilo", "holdem", "war"], wheels: ["roulette", "wheel", "plinko"], dice: ["sicbo", "craps"], oracles: ["keno", "bingo", "dragon", "baccarat"], vaults: ["slots", "mines", "tower", "scratch"] };
+const eternalDealerGames: Record<EternalDealerId, string[]> = { selene: ["blackjack", "poker", "holdem"], cain: ["war", "hilo"], aurelia: ["roulette", "wheel", "plinko"], vesper: ["baccarat", "dragon"], obsidian: ["sicbo", "craps"], lyra: ["slots", "scratch"], nyx: ["mines", "tower"], oracle: ["keno", "bingo"] };
+const eternalTalentIds = ["fame-0", "fame-1", "fame-2", "fame-3", "fame-4", "fame-5", "bond-0", "bond-1", "bond-2", "bond-3", "bond-4", "bond-5", "relic-0", "relic-1", "relic-2", "relic-3", "relic-4", "relic-5", "odyssey-0", "odyssey-1", "odyssey-2", "odyssey-3", "odyssey-4", "odyssey-5", "league-0", "league-1", "league-2", "league-3", "league-4", "league-5"] as const satisfies readonly EternalTalentId[];
+const eternalOmenRounds: Record<EternalOmenId, number> = { renown: 4, relic: 4, bond: 5, odyssey: 4, league: 4, keys: 5, raid: 4, all: 3 };
 const masteryGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo"];
 const constellationNodes: ConstellationNode[] = [
   { id: "fortune_1", cost: 1, effect: { xp: .08 } }, { id: "fortune_2", cost: 1, effect: { stardust: .2 } }, { id: "fortune_3", cost: 2, requires: ["fortune_1"], effect: { vault: .2 } }, { id: "fortune_4", cost: 2, requires: ["fortune_2"], effect: { streakMastery: .25 } }, { id: "fortune_5", cost: 2, requires: ["fortune_3"], effect: { daily: .1 } }, { id: "fortune_6", cost: 2, requires: ["fortune_4"], effect: { lossDust: 1 } }, { id: "fortune_7", cost: 3, requires: ["fortune_5", "fortune_6"], effect: { xp: .12, stardust: .12 } }, { id: "fortune_8", cost: 4, requires: ["fortune_7"], effect: { roundCapsule: 1 } },
@@ -291,6 +310,41 @@ export class ActivityEconomyService {
     return this.publicAscension(next);
   }
 
+  eternalStatus(user: DiscordUser) {
+    return this.publicEternal(this.progressFor(user.id));
+  }
+
+  migrateEternal(user: DiscordUser, source: { renown: EternalRenown; districts: Record<string, EternalDistrict>; dealers: Record<string, EternalDealer>; omen: { active: string | null; remaining: number; nextIn: number }; stats: EternalStats }) {
+    const progress = this.progressFor(user.id);
+    if (progress.eternalMigrated) return this.publicEternal(progress);
+    const next = {
+      ...progress,
+      eternalMigrated: true,
+      eternalRenown: normalizeEternalRenown(source.renown),
+      eternalDistricts: normalizeEternalDistricts(source.districts),
+      eternalDealers: normalizeEternalDealers(source.dealers),
+      eternalOmen: normalizeEternalOmen(source.omen),
+      eternalStats: normalizeEternalStats(source.stats)
+    };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return this.publicEternal(next);
+  }
+
+  unlockEternalTalent(user: DiscordUser, id: EternalTalentId) {
+    const progress = this.progressFor(user.id);
+    if (!progress.eternalMigrated || !eternalTalentIds.includes(id)) throw new AppError(409, "casino_transaction_conflict", "Eternal talent is unavailable.");
+    const rank = progress.eternalRenown.nodes[id] ?? 0;
+    const [, rawIndex] = id.split("-");
+    const index = Number(rawIndex);
+    const previous = `${id.split("-")[0]}-${index - 1}` as EternalTalentId;
+    if (rank >= 3 || progress.eternalRenown.points < 1 || (index > 0 && (progress.eternalRenown.nodes[previous] ?? 0) < 1)) throw new AppError(409, "casino_transaction_conflict", "Eternal talent is unavailable.");
+    const next = { ...progress, eternalRenown: { ...progress.eternalRenown, points: progress.eternalRenown.points - 1, nodes: { ...progress.eternalRenown.nodes, [id]: rank + 1 } } };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return this.publicEternal(next);
+  }
+
   unlockConstellation(user: DiscordUser, id: string) {
     const progress = this.progressFor(user.id);
     if (!progress.ascensionMigrated) throw new AppError(409, "casino_transaction_conflict", "Ascension migration is unavailable.");
@@ -331,7 +385,7 @@ export class ActivityEconomyService {
 
   partyModifiers(user: DiscordUser, game?: string) {
     const progress = this.progressFor(user.id);
-    return { party: 1 + this.constellationEffect(progress, "party"), partyReward: 1 + this.constellationEffect(progress, "partyReward"), raid: 1 + this.constellationEffect(progress, "raid"), masteryLevel: game && masteryGames.includes(game) ? (progress.mastery[game]?.level ?? 1) : 1 };
+    return { party: 1 + this.constellationEffect(progress, "party"), partyReward: 1 + this.constellationEffect(progress, "partyReward"), raid: 1 + this.constellationEffect(progress, "raid") + this.eternalOmenEffect(progress, "raid"), masteryLevel: game && masteryGames.includes(game) ? (progress.mastery[game]?.level ?? 1) : 1 };
   }
 
   async mysteryStatus(user: DiscordUser) {
@@ -418,6 +472,7 @@ export class ActivityEconomyService {
     if (boon === "shield") next = { ...next, odysseyShields: next.odysseyShields + 1 };
     if (boon === "score") next = { ...next, odysseyScore: Math.floor(next.odysseyScore * 1.25 + 300) };
     if (boon === "key" && next.artifactMigrated) next = { ...next, artifactKeys: next.artifactKeys + 1 };
+    if (boon === "fame" && next.eternalMigrated) next = { ...next, eternalRenown: this.gainEternalRenown(next, 500) };
     if (boon === "coins") {
       const result = await requestActivityAdjustment({ transactionId: `activity-odyssey-boon-${user.id}-${next.odysseyRunId}-${next.odysseyBoons.length}`, discordUserId: user.id, sessionId: `odyssey-${next.odysseyRunId}-boon-${next.odysseyBoons.length}`, operation: "credit", amount: 1_500, reason: "odyssey" }, this.options.env, this.options.fetch);
       wallet = result.wallet;
@@ -428,8 +483,12 @@ export class ActivityEconomyService {
       const result = await requestActivityAdjustment({ transactionId: `activity-odyssey-complete-${user.id}-${next.odysseyRunId}`, discordUserId: user.id, sessionId: `odyssey-${next.odysseyRunId}-complete`, operation: "credit", amount, reason: "odyssey" }, this.options.env, this.options.fetch);
       wallet = result.wallet;
       currency = result.currency;
-      next = { ...next, odysseyActive: false, odysseyCompleted: next.odysseyCompleted + 1, odysseyBestScore: Math.max(next.odysseyBestScore, next.odysseyScore), artifactKeys: next.artifactMigrated ? next.artifactKeys + 3 : next.artifactKeys };
-      if (next.artifactMigrated) next = this.grantArtifact(next, "mythic").progress;
+      next = { ...next, odysseyActive: false, odysseyCompleted: next.odysseyCompleted + 1, odysseyBestScore: Math.max(next.odysseyBestScore, next.odysseyScore), artifactKeys: next.artifactMigrated ? next.artifactKeys + 3 : next.artifactKeys, eternalStats: next.eternalMigrated ? { ...next.eternalStats, odysseyClears: next.eternalStats.odysseyClears + 1 } : next.eternalStats };
+      if (next.artifactMigrated) {
+        const granted = this.grantArtifact(next, "mythic");
+        next = granted.progress;
+        if (next.eternalMigrated && granted.item) next = { ...next, eternalStats: { ...next.eternalStats, artifactsFound: next.eternalStats.artifactsFound + 1 } };
+      }
     } else {
       next = this.prepareOdysseyNodes({ ...next, odysseyFloor: next.odysseyFloor + 1, odysseySelected: null });
     }
@@ -864,9 +923,10 @@ export class ActivityEconomyService {
       currency = circuit.currency;
     }
     progress = this.advanceOdyssey(progress, round);
+    progress = this.advanceEternal(progress, round);
     progress = this.advanceSovereign(progress, round);
     progress = this.advanceCollection(progress, round);
-    progress = this.advanceArtifacts(progress, round);
+    if (!progress.eternalMigrated) progress = this.advanceArtifacts(progress, round);
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -1098,7 +1158,8 @@ export class ActivityEconomyService {
     const success = node.type === "play" ? true : node.type === "win" ? round.payout > round.wager : round.wager >= node.target;
     const bestFloor = Math.max(progress.odysseyBestFloor, progress.odysseyFloor);
     if (success) {
-      const score = progress.odysseyScore + 200 + progress.odysseyFloor * 100 + Math.max(0, Math.floor((round.payout - round.wager) / 50));
+      const gain = Math.floor((200 + progress.odysseyFloor * 100 + Math.max(0, Math.floor((round.payout - round.wager) / 50))) * (1 + this.eternalTalentEffect(progress, "odyssey") + this.eternalOmenEffect(progress, "odyssey")));
+      const score = progress.odysseyScore + gain;
       return { ...progress, odysseyScore: score, odysseyBestFloor: bestFloor, odysseySelected: null, odysseyChoices: shuffle(odysseyBoons).slice(0, 3) };
     }
     if (progress.odysseyShields > 0) return this.prepareOdysseyNodes({ ...progress, odysseyShields: progress.odysseyShields - 1, odysseySelected: null, odysseyBestFloor: bestFloor });
@@ -1132,6 +1193,116 @@ export class ActivityEconomyService {
       sovereignBestWinStreak: Math.max(progress.sovereignBestWinStreak, streak)
     }, (stat.rounds % 2 === 0 ? 1 : 0) + (won ? 1 : 0));
     return this.unlockSovereignMedals(next);
+  }
+
+  private advanceEternal(progress: ActivityProgress, round: TrustedMissionRound): ActivityProgress {
+    if (!progress.eternalMigrated || !progress.artifactMigrated) return progress;
+    const originalGame = round.game ?? round.id.split("-", 1)[0] ?? "";
+    const game = ({ threecard: "holdem", derby: "wheel", ascent: "tower", arcana: "bingo", moonshot: "plinko" } as Record<string, string>)[originalGame] ?? originalGame;
+    const districtId = (Object.entries(eternalDistrictGames).find(([, games]) => games.includes(game))?.[0] ?? null) as EternalDistrictId | null;
+    if (!districtId) return progress;
+    const won = round.payout > round.wager;
+    const omen = this.advanceEternalOmen(progress.eternalOmen);
+    const renown = this.gainEternalRenown(progress, 35 + Math.floor(round.wager / 650) + (won ? 55 : 0));
+    const district = { ...progress.eternalDistricts[districtId] };
+    district.xp += Math.max(1, 22 + Math.floor(round.wager / 900) + (won ? 28 : 0));
+    district.rounds += 1;
+    district.wins += won ? 1 : 0;
+    let keys = progress.artifactKeys;
+    while (district.level < 30 && district.xp >= eternalDistrictNeed(district.level)) {
+      district.xp -= eternalDistrictNeed(district.level);
+      district.level += 1;
+      if (district.level % 5 === 0) keys += 1;
+    }
+    const dealerId = (Object.entries(eternalDealerGames).find(([, games]) => games.includes(game))?.[0] ?? null) as EternalDealerId | null;
+    const dealers = { ...progress.eternalDealers };
+    if (dealerId) {
+      const dealer = { ...dealers[dealerId] };
+      const gain = Math.floor((12 + Math.floor(round.wager / 1_200) + (won ? 10 : 0)) * (1 + this.eternalTalentEffect(progress, "bond") + this.eternalOmenEffect(progress, "bond")));
+      dealer.xp += Math.max(0, gain);
+      dealer.rounds += 1;
+      while (dealer.level < 10 && dealer.xp >= eternalDealerNeed(dealer.level)) {
+        dealer.xp -= eternalDealerNeed(dealer.level);
+        dealer.level += 1;
+        dealer.chapters = Math.max(dealer.chapters, Math.ceil(dealer.level / 2));
+        if (dealer.level === 10) keys += 1;
+      }
+      dealers[dealerId] = dealer;
+    }
+    let fragments = progress.artifactFragments + 1 + (won ? 1 : 0) + (randomInt(10_000) < this.eternalOmenEffectFor(omen, "key") * 10_000 ? 5 : 0);
+    keys += Math.floor(fragments / 30);
+    fragments %= 30;
+    let next: ActivityProgress = {
+      ...progress,
+      eternalRenown: renown,
+      eternalDistricts: { ...progress.eternalDistricts, [districtId]: district },
+      eternalDealers: dealers,
+      eternalOmen: omen,
+      artifactKeys: keys,
+      artifactFragments: fragments,
+      eternalStats: {
+        ...progress.eternalStats,
+        rounds: progress.eternalStats.rounds + 1,
+        newGames: progress.eternalStats.newGames + (originalGame !== game ? 1 : 0),
+        holdemWins: progress.eternalStats.holdemWins + (game === "holdem" && won ? 1 : 0),
+        warWins: progress.eternalStats.warWins + (game === "war" && won ? 1 : 0),
+        bingos: progress.eternalStats.bingos + (game === "bingo" && won ? 1 : 0),
+        towerSummits: progress.eternalStats.towerSummits + (round.sovereignEvents?.towerSummit ? 1 : 0),
+        scratchWins: progress.eternalStats.scratchWins + (game === "scratch" && won ? 1 : 0)
+      }
+    };
+    if (randomInt(10_000) < (350 + Math.floor((this.eternalTalentEffect(progress, "artifact") + this.eternalOmenEffectFor(omen, "artifact")) * 10_000))) {
+      const granted = this.grantArtifact(next);
+      next = { ...granted.progress, eternalStats: { ...granted.progress.eternalStats, artifactsFound: granted.item ? granted.progress.eternalStats.artifactsFound + 1 : granted.progress.eternalStats.artifactsFound } };
+    }
+    return next;
+  }
+
+  private gainEternalRenown(progress: ActivityProgress, amount: number) {
+    const renown = { ...progress.eternalRenown };
+    const gain = Math.floor(Math.max(0, amount) * (1 + this.eternalTalentEffect(progress, "renown") + this.eternalOmenEffect(progress, "renown")));
+    renown.xp += gain;
+    renown.totalXp += gain;
+    while (renown.level < 100 && renown.xp >= eternalRenownNeed(renown.level)) {
+      renown.xp -= eternalRenownNeed(renown.level);
+      renown.level += 1;
+      if (renown.level % 4 === 0) renown.points += 1;
+    }
+    return renown;
+  }
+
+  private eternalTalentEffect(progress: ActivityProgress, effect: "renown" | "bond" | "artifact" | "odyssey" | "league") {
+    if (!progress.eternalMigrated) return 0;
+    return eternalTalentIds.reduce((total, id) => {
+      const [branch, rawIndex] = id.split("-");
+      if (branch !== effect && !(effect === "renown" && branch === "fame")) return total;
+      const amount = Number(rawIndex) < 2 ? .04 : Number(rawIndex) < 4 ? .06 : .08;
+      return total + (progress.eternalRenown.nodes[id] ?? 0) * amount;
+    }, 0);
+  }
+
+  private eternalOmenEffect(progress: ActivityProgress, effect: "renown" | "bond" | "artifact" | "odyssey" | "league" | "key" | "raid") {
+    if (!progress.eternalMigrated) return 0;
+    return this.eternalOmenEffectFor(progress.eternalOmen, effect);
+  }
+
+  private eternalOmenEffectFor(omen: EternalOmen, effect: "renown" | "bond" | "artifact" | "odyssey" | "league" | "key" | "raid") {
+    const active = omen.active;
+    if (active === "all") return ({ renown: .5, bond: .5, artifact: .08, odyssey: .25, league: .5, key: 0, raid: 0 } as Record<string, number>)[effect] ?? 0;
+    if (active === effect) return ({ renown: 1, bond: 1, artifact: .18, odyssey: .5, league: 1, key: .15, raid: .75 } as Record<string, number>)[effect] ?? 0;
+    return 0;
+  }
+
+  private advanceEternalOmen(omen: EternalOmen): EternalOmen {
+    if (omen.active) {
+      const remaining = omen.remaining - 1;
+      return remaining > 0 ? { ...omen, remaining } : { active: null, remaining: 0, nextIn: 6 + randomInt(5) };
+    }
+    const nextIn = omen.nextIn - 1;
+    if (nextIn > 0) return { ...omen, nextIn };
+    const ids = Object.keys(eternalOmenRounds) as EternalOmenId[];
+    const active = ids[randomInt(ids.length)]!;
+    return { active, remaining: eternalOmenRounds[active], nextIn: 0 };
   }
 
   private addSovereignMarks(progress: ActivityProgress, amount: number) {
@@ -1273,6 +1444,10 @@ export class ActivityEconomyService {
 
   private publicAscension(progress: ActivityProgress) {
     return { migrated: progress.ascensionMigrated, mastery: progress.mastery, constellation: { nodes: progress.constellationNodes, points: progress.constellationPoints, earnedFromMastery: progress.constellationMasteryPoints } };
+  }
+
+  private publicEternal(progress: ActivityProgress) {
+    return { migrated: progress.eternalMigrated, renown: progress.eternalRenown, districts: progress.eternalDistricts, dealers: progress.eternalDealers, omen: progress.eternalOmen, stats: progress.eternalStats, keys: progress.artifactKeys, fragments: progress.artifactFragments };
   }
 
   private publicDuelProfile(progress: ActivityProgress) {
@@ -1507,6 +1682,12 @@ function normalizeProgress(value: unknown): ActivityProgress {
     sovereignWinStreak: safeNonNegativeInteger(raw.sovereignWinStreak),
     sovereignBestWinStreak: safeNonNegativeInteger(raw.sovereignBestWinStreak),
     sovereignPrestige: safeNonNegativeInteger(raw.sovereignPrestige),
+    eternalMigrated: raw.eternalMigrated === true,
+    eternalRenown: normalizeEternalRenown(raw.eternalRenown),
+    eternalDistricts: normalizeEternalDistricts(raw.eternalDistricts),
+    eternalDealers: normalizeEternalDealers(raw.eternalDealers),
+    eternalOmen: normalizeEternalOmen(raw.eternalOmen),
+    eternalStats: normalizeEternalStats(raw.eternalStats),
     artifactMigrated: raw.artifactMigrated === true,
     artifactOwned: Array.isArray(raw.artifactOwned) ? [...new Set(raw.artifactOwned.filter((id): id is string => typeof id === "string" && artifactItemIds.includes(id)))] : [],
     artifactClaims: Array.isArray(raw.artifactClaims) ? [...new Set(raw.artifactClaims.filter((id): id is string => typeof id === "string" && artifactSets.includes(id)))] : [],
@@ -1607,6 +1788,12 @@ function initialProgress(): ActivityProgress {
     sovereignWinStreak: 0,
     sovereignBestWinStreak: 0,
     sovereignPrestige: 0,
+    eternalMigrated: false,
+    eternalRenown: emptyEternalRenown(),
+    eternalDistricts: emptyEternalDistricts(),
+    eternalDealers: emptyEternalDealers(),
+    eternalOmen: { active: null, remaining: 0, nextIn: 8 },
+    eternalStats: emptyEternalStats(),
     artifactMigrated: false,
     artifactOwned: [],
     artifactClaims: [],
@@ -1809,6 +1996,70 @@ function normalizeSovereignMedals(value: unknown): Record<string, number> {
 
 function sovereignStars(stat: SovereignStat): number {
   return Number(stat.rounds >= 3) + Number(stat.rounds >= 10) + Number(stat.wins >= 3) + Number(stat.best >= 5) + Number(stat.rounds >= 30 && stat.wins >= 10);
+}
+
+function eternalRenownNeed(level: number): number {
+  return 260 + level * 115;
+}
+
+function eternalDistrictNeed(level: number): number {
+  return 180 + level * 95;
+}
+
+function eternalDealerNeed(level: number): number {
+  return 90 + level * 55;
+}
+
+function emptyEternalRenown(): EternalRenown {
+  return { level: 1, xp: 0, totalXp: 0, points: 1, nodes: {} };
+}
+
+function emptyEternalDistricts(): Record<EternalDistrictId, EternalDistrict> {
+  return Object.fromEntries(Object.keys(eternalDistrictGames).map((id) => [id, { level: 1, xp: 0, rounds: 0, wins: 0 }])) as Record<EternalDistrictId, EternalDistrict>;
+}
+
+function emptyEternalDealers(): Record<EternalDealerId, EternalDealer> {
+  return Object.fromEntries(Object.keys(eternalDealerGames).map((id) => [id, { level: 1, xp: 0, rounds: 0, chapters: 1 }])) as Record<EternalDealerId, EternalDealer>;
+}
+
+function emptyEternalStats(): EternalStats {
+  return { rounds: 0, newGames: 0, holdemWins: 0, warWins: 0, bingos: 0, towerSummits: 0, scratchWins: 0, artifactsFound: 0, odysseyClears: 0 };
+}
+
+function normalizeEternalRenown(value: unknown): EternalRenown {
+  const raw = value && typeof value === "object" ? value as Partial<EternalRenown> : {};
+  const nodes = raw.nodes && typeof raw.nodes === "object" ? raw.nodes as Record<string, unknown> : {};
+  return { level: Math.min(100, Math.max(1, safeNonNegativeInteger(raw.level, 1))), xp: safeNonNegativeInteger(raw.xp), totalXp: safeNonNegativeInteger(raw.totalXp), points: safeNonNegativeInteger(raw.points, 1), nodes: Object.fromEntries(eternalTalentIds.flatMap((id) => {
+    const rank = nodes[id];
+    return typeof rank === "number" && Number.isInteger(rank) && rank >= 1 && rank <= 3 ? [[id, rank]] : [];
+  })) as Partial<Record<EternalTalentId, number>> };
+}
+
+function normalizeEternalDistricts(value: unknown): Record<EternalDistrictId, EternalDistrict> {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return Object.fromEntries((Object.keys(eternalDistrictGames) as EternalDistrictId[]).map((id) => {
+    const source = raw[id] && typeof raw[id] === "object" ? raw[id] as Partial<EternalDistrict> : {};
+    return [id, { level: Math.min(30, Math.max(1, safeNonNegativeInteger(source.level, 1))), xp: safeNonNegativeInteger(source.xp), rounds: safeNonNegativeInteger(source.rounds), wins: safeNonNegativeInteger(source.wins) }];
+  })) as Record<EternalDistrictId, EternalDistrict>;
+}
+
+function normalizeEternalDealers(value: unknown): Record<EternalDealerId, EternalDealer> {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return Object.fromEntries((Object.keys(eternalDealerGames) as EternalDealerId[]).map((id) => {
+    const source = raw[id] && typeof raw[id] === "object" ? raw[id] as Partial<EternalDealer> : {};
+    return [id, { level: Math.min(10, Math.max(1, safeNonNegativeInteger(source.level, 1))), xp: safeNonNegativeInteger(source.xp), rounds: safeNonNegativeInteger(source.rounds), chapters: Math.min(5, Math.max(1, safeNonNegativeInteger(source.chapters, 1))) }];
+  })) as Record<EternalDealerId, EternalDealer>;
+}
+
+function normalizeEternalOmen(value: unknown): EternalOmen {
+  const raw = value && typeof value === "object" ? value as Partial<EternalOmen> : {};
+  const active = typeof raw.active === "string" && raw.active in eternalOmenRounds ? raw.active as EternalOmenId : null;
+  return { active, remaining: Math.min(10, safeNonNegativeInteger(raw.remaining)), nextIn: Math.min(20, safeNonNegativeInteger(raw.nextIn, 8)) };
+}
+
+function normalizeEternalStats(value: unknown): EternalStats {
+  const raw = value && typeof value === "object" ? value as Partial<EternalStats> : {};
+  return Object.fromEntries(Object.keys(emptyEternalStats()).map((id) => [id, safeNonNegativeInteger(raw[id as keyof EternalStats])])) as EternalStats;
 }
 
 function shuffle<T>(items: T[]): T[] {

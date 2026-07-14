@@ -111,6 +111,16 @@ describe("ActivityEconomyService missions", () => {
     expect(() => service.unlockConstellation(user, "fortune_7")).toThrow("Constellation prerequisites are incomplete.");
   });
 
+  it("keeps Eternal renown, talents, districts, and dealer bonds on the server", async () => {
+    const service = new ActivityEconomyService({ env, fetch: vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } })), store: new MemoryStore() });
+    await service.migrateArtifacts(user, [], { keys: 0, fragments: 0, opened: 0, duplicates: 0, shards: 0 });
+    const migrated = service.migrateEternal(user, { renown: { level: 1, xp: 0, totalXp: 0, points: 1, nodes: {} }, districts: {}, dealers: {}, omen: { active: null, remaining: 0, nextIn: 8 }, stats: { rounds: 0, newGames: 0, holdemWins: 0, warWins: 0, bingos: 0, towerSummits: 0, scratchWins: 0, artifactsFound: 0, odysseyClears: 0 } } as never);
+    expect(migrated).toMatchObject({ migrated: true, renown: { level: 1, points: 1 }, districts: { cards: { level: 1 } }, dealers: { selene: { level: 1 } } });
+    expect(service.unlockEternalTalent(user, "fame-0")).toMatchObject({ renown: { points: 0, nodes: { "fame-0": 1 } } });
+    await service.recordMissionRound(user, { id: "eternal-blackjack-1", game: "blackjack", wager: 100, payout: 200 });
+    expect(service.eternalStatus(user)).toMatchObject({ renown: { totalXp: 93 }, districts: { cards: { rounds: 1, wins: 1, xp: 50 } }, dealers: { selene: { rounds: 1, xp: 22 } }, stats: { rounds: 1 } });
+  });
+
   it("claims a server-owned mystery coin reward exactly once", async () => {
     const store = new MemoryStore();
     store.save({ users: { [user.id]: { mysteryOffer: { id: "100-1", rewards: [{ type: "coins", amount: 700 }, { type: "dust", amount: 100 }, { type: "tokens", amount: 3 }], claimed: false } } } });

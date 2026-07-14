@@ -21,6 +21,7 @@
   let albumRefresh = 0;
   let sovereignRefresh = 0;
   let artifactRefresh = 0;
+  let eternalRefresh = 0;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -168,6 +169,35 @@
       if (!response.ok || !payload?.ok || !payload.ascension) return;
     }
     applyAscension(payload.ascension);
+  }
+
+  function applyEternal(eternal) {
+    if (!eternal || !app.eternal) return;
+    const local = app.eternal.data;
+    if (eternal.renown && typeof eternal.renown === "object") local.renown = { ...local.renown, ...eternal.renown, nodes: { ...(eternal.renown.nodes || {}) } };
+    if (eternal.districts && typeof eternal.districts === "object") local.districts = { ...local.districts, ...eternal.districts };
+    if (eternal.dealers && typeof eternal.dealers === "object") local.dealers = { ...local.dealers, ...eternal.dealers };
+    if (eternal.omen && typeof eternal.omen === "object") local.omen = { ...local.omen, ...eternal.omen };
+    if (eternal.stats && typeof eternal.stats === "object") local.stats = { ...local.stats, ...eternal.stats };
+    if (Number.isInteger(eternal.keys)) local.keys = eternal.keys;
+    if (Number.isInteger(eternal.fragments)) local.keyFragments = eternal.fragments;
+    app.profile.save();
+    app.eternal.updateAll();
+    if (app.activeModal?.id === "eternalModal") app.eternal.render(app.eternal.tab);
+  }
+
+  async function refreshEternal() {
+    const refresh = ++eternalRefresh;
+    let response = await fetch("/api/economy/eternal", { credentials: "include" });
+    let payload = await response.json().catch(() => null);
+    if (refresh !== eternalRefresh || !response.ok || !payload?.ok || !payload.eternal || !app.eternal) return;
+    if (!payload.eternal.migrated) {
+      const data = app.eternal.data;
+      response = await fetch("/api/economy/eternal/migrate", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ renown: data.renown, districts: data.districts, dealers: data.dealers, omen: data.omen, stats: data.stats }) });
+      payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.eternal) return;
+    }
+    applyEternal(payload.eternal);
   }
 
   function applyDuelProfile(duel) {
@@ -886,9 +916,12 @@
     const localEternalRound = app.eternal.onRound;
     app.eternal.onRound = function (payload) {
       const artifactResources = snapshotArtifactResources();
+      const eternalProgress = structuredClone({ renown: this.data.renown, districts: this.data.districts, dealers: this.data.dealers, omen: this.data.omen, stats: this.data.stats, keys: this.data.keys, keyFragments: this.data.keyFragments });
       const result = localEternalRound.call(this, payload);
       restoreArtifactResources(artifactResources);
+      Object.assign(this.data, eternalProgress);
       void refreshArtifacts();
+      void refreshEternal();
       return result;
     };
     app.eternal.grantArtifact = function () { return null; };
@@ -919,6 +952,14 @@
       this.data.artifacts.sets[set] = owned;
       if (owned === 6 && !this.data.artifacts.sets[`${set}-claimed`]) void claimArtifactSet(this, set);
     };
+    app.eternal.buyTalent = async function (id) {
+      const response = await fetch(`/api/economy/eternal/talents/${encodeURIComponent(id)}`, { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.eternal) { void refreshEternal(); return; }
+      applyEternal(payload.eternal);
+      this.app.audio.play("chime");
+      this.render("legacy");
+    };
     app.eternal.startOdyssey = async function () {
       const response = await fetch("/api/economy/odyssey/start", { method: "POST", credentials: "include" });
       const payload = await response.json().catch(() => null);
@@ -943,10 +984,10 @@
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload?.ok || !payload.odyssey) return;
       const result = payload.odyssey;
-      if (boon === "fame") this.addRenown(500);
       if (floor >= 12 && !result.active) {
         void refreshArtifacts();
       }
+      void refreshEternal();
       applyOdyssey(result);
       this.app.audio.play(boon === "coins" || floor >= 12 ? "bigwin" : "chime");
       this.render("odyssey");
@@ -965,6 +1006,7 @@
   refreshMissions();
   void refreshWeekly();
   void refreshAscension();
+  void refreshEternal();
   void refreshDuelProfile();
   void refreshMystery();
   void refreshSeason();

@@ -130,6 +130,8 @@
     if (!response.ok || !payload?.ok || !payload.weekly || !app.ascension) return;
     const current = new Map((app.ascension.data.weekly.items || []).map((item) => [item.id, item]));
     app.ascension.data.weekly = { ...app.ascension.data.weekly, id: payload.weekly.week, items: payload.weekly.items.map((item) => ({ ...(current.get(item.id) || item), ...item, complete: item.progress >= item.target })) };
+    if (Number.isInteger(payload.weekly.eventTokens)) app.ascension.data.eventTokens = payload.weekly.eventTokens;
+    applyAlbums(payload.weekly.collection);
     window.__IRIS_SET_WALLET?.(payload.weekly.wallet);
     app.profile.save();
   }
@@ -139,6 +141,8 @@
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok || !payload.mystery) return;
     mysteryOffer = payload.mystery.offer;
+    if (Number.isInteger(payload.mystery.eventTokens)) app.ascension.data.eventTokens = payload.mystery.eventTokens;
+    applyAlbums(payload.mystery.collection);
     if (Number.isInteger(payload.mystery.wallet) && payload.mystery.wallet >= 0) window.__IRIS_SET_WALLET?.(payload.mystery.wallet);
     if (openWhenAvailable && mysteryOffer && !mysteryOffer.claimed) app.ascension?.openMystery?.();
   }
@@ -150,6 +154,8 @@
     if (refresh !== seasonRefresh || !response.ok || !payload?.ok || !payload.season || !app.ascension) return;
     const season = payload.season;
     app.ascension.data.season = { ...app.ascension.data.season, id: season.id, xp: season.xp, claimed: Object.fromEntries((season.claimed || []).map((tier) => [tier, true])) };
+    if (Number.isInteger(season.eventTokens)) app.ascension.data.eventTokens = season.eventTokens;
+    applyAlbums(season.collection);
     if (Number.isInteger(season.wallet) && season.wallet >= 0) window.__IRIS_SET_WALLET?.(season.wallet);
     app.profile.save();
     app.ascension.updateAll();
@@ -549,8 +555,8 @@
     if (!response.ok || !payload?.ok || !payload.weekly || payload.weekly.alreadyClaimed) return;
     item.claimed = true;
     window.__IRIS_SET_WALLET?.(payload.weekly.wallet);
-    this.addStardust(item.reward.dust, false);
-    this.data.eventTokens += item.reward.tokens;
+    if (Number.isInteger(payload.weekly.eventTokens)) this.data.eventTokens = payload.weekly.eventTokens;
+    applyAlbums(payload.weekly.collection);
     this.app.profile.save();
     this.app.audio.play("bigwin");
     this.app.celebration.burst(.55);
@@ -570,10 +576,8 @@
       const reward = payload.season.reward;
       this.data.season.claimed[tier] = Date.now();
       if (reward.type === "coins") window.__IRIS_SET_WALLET?.(payload.season.wallet);
-      if (reward.type === "dust") this.addStardust(reward.amount, false);
-      if (reward.type === "tokens") this.data.eventTokens += reward.amount;
-      if (reward.type === "shards") this.data.crownShards += reward.amount;
-      if (reward.type === "capsule") this.data.capsules += reward.amount;
+      if (Number.isInteger(payload.season.eventTokens)) this.data.eventTokens = payload.season.eventTokens;
+      applyAlbums(payload.season.collection);
       this.data.stats.seasonClaims += 1;
       this.app.profile.save();
       this.app.audio.play("chime");
@@ -653,9 +657,8 @@
         if (!response.ok || !payload?.ok || !payload.mystery?.reward) throw new Error("mystery unavailable");
         const reward = payload.mystery.reward;
         if (reward.type === "coins") window.__IRIS_SET_WALLET?.(payload.mystery.wallet);
-        if (reward.type === "dust") this.addStardust(reward.amount, false);
-        if (reward.type === "capsule") this.data.capsules += reward.amount;
-        if (reward.type === "tokens") this.data.eventTokens += reward.amount;
+        if (Number.isInteger(payload.mystery.eventTokens)) this.data.eventTokens = payload.mystery.eventTokens;
+        applyAlbums(payload.mystery.collection);
         this.data.mystery.opened += 1;
         document.querySelectorAll(".mystery-doors button").forEach((button, door) => { button.disabled = true; button.classList.add(door === index ? "opened" : "faded"); });
         const reveal = document.querySelector("#mysteryReveal");

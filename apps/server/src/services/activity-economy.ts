@@ -15,6 +15,7 @@ type ActivityProgress = {
   reserve: number;
   notes: number;
   noteRemainder: number;
+  eventTokens: number;
   reliefClaimed: boolean;
   missionDate: string;
   missions: MissionProgress[];
@@ -85,7 +86,7 @@ type ActivityProgress = {
 type MissionEvent = "round" | "win" | "wager" | "blackjack" | "rouletteStraight" | "freeSpins" | "slotCascade" | "pokerGood" | "baccaratRound" | "sicboRound" | "kenoFour";
 type MissionProgress = { id: string; event: MissionEvent; target: number; reward: number; progress: number; claimed: boolean };
 type WeeklyEvent = "round" | "win" | "wager" | "variety";
-type WeeklyProgress = { id: string; event: WeeklyEvent; target: number; reward: number; progress: number; claimed: boolean; games: string[] };
+type WeeklyProgress = { id: string; event: WeeklyEvent; target: number; reward: { coins: number; dust: number; tokens: number }; progress: number; claimed: boolean; games: string[] };
 type MysteryReward = { type: "coins" | "dust" | "capsule" | "tokens"; amount: number };
 type MysteryOffer = { id: string; rewards: MysteryReward[]; claimed: boolean };
 type SeasonReward = { type: "coins" | "dust" | "tokens" | "shards" | "capsule"; amount: number };
@@ -112,10 +113,10 @@ const missionPool: Omit<MissionProgress, "progress" | "claimed">[] = [
 const nightEventRounds: Record<NightEventId, number> = { stardust: 4, vault: 4, echo: 3, crown: 4 };
 const nightEventIds = Object.keys(nightEventRounds) as NightEventId[];
 const weeklyPool: Omit<WeeklyProgress, "progress" | "claimed" | "games">[] = [
-  { id: "rounds", event: "round", target: 50, reward: 2500 },
-  { id: "wins", event: "win", target: 15, reward: 3000 },
-  { id: "wager", event: "wager", target: 250000, reward: 3500 },
-  { id: "variety", event: "variety", target: 10, reward: 3000 }
+  { id: "rounds", event: "round", target: 50, reward: { coins: 2500, dust: 180, tokens: 2 } },
+  { id: "wins", event: "win", target: 15, reward: { coins: 3000, dust: 220, tokens: 2 } },
+  { id: "wager", event: "wager", target: 250000, reward: { coins: 3500, dust: 250, tokens: 3 } },
+  { id: "variety", event: "variety", target: 10, reward: { coins: 3000, dust: 300, tokens: 3 } }
 ];
 const circuitGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch", "threecard", "derby", "ascent", "arcana", "moonshot"];
 const odysseyGames = ["blackjack", "roulette", "slots", "baccarat", "poker", "sicbo", "keno", "craps", "dragon", "wheel", "mines", "plinko", "hilo", "holdem", "war", "bingo", "tower", "scratch"];
@@ -218,19 +219,19 @@ export class ActivityEconomyService {
   async weeklyStatus(user: DiscordUser) {
     const progress = this.ensureWeekly(user.id, this.progressFor(user.id));
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    return { week: progress.weeklyId, items: progress.weekly, wallet: wallet.wallet, currency: wallet.currency };
+    return { week: progress.weeklyId, items: progress.weekly, eventTokens: progress.eventTokens, collection: this.publicCollection(progress), wallet: wallet.wallet, currency: wallet.currency };
   }
 
   async mysteryStatus(user: DiscordUser) {
     const progress = this.progressFor(user.id);
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    return { offer: progress.mysteryOffer, wallet: wallet.wallet, currency: wallet.currency };
+    return { offer: progress.mysteryOffer, eventTokens: progress.eventTokens, collection: this.publicCollection(progress), wallet: wallet.wallet, currency: wallet.currency };
   }
 
   async seasonStatus(user: DiscordUser) {
     const progress = this.ensureSeason(user.id, this.progressFor(user.id));
     const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    return { id: progress.seasonId, xp: progress.seasonXp, tier: seasonTier(progress.seasonXp), claimed: progress.seasonClaimed, wallet: wallet.wallet, currency: wallet.currency };
+    return { id: progress.seasonId, xp: progress.seasonXp, tier: seasonTier(progress.seasonXp), claimed: progress.seasonClaimed, eventTokens: progress.eventTokens, collection: this.publicCollection(progress), wallet: wallet.wallet, currency: wallet.currency };
   }
 
   async claimSeason(user: DiscordUser, tier: number) {
@@ -244,11 +245,14 @@ export class ActivityEconomyService {
     const next = {
       ...progress,
       seasonClaimed: [...progress.seasonClaimed, tier],
-      collectionCapsules: reward.type === "capsule" ? progress.collectionCapsules + reward.amount : progress.collectionCapsules
+      collectionCapsules: reward.type === "capsule" ? progress.collectionCapsules + reward.amount : progress.collectionCapsules,
+      collectionDust: reward.type === "dust" ? progress.collectionDust + reward.amount : progress.collectionDust,
+      collectionShards: reward.type === "shards" ? progress.collectionShards + reward.amount : progress.collectionShards,
+      eventTokens: reward.type === "tokens" ? progress.eventTokens + reward.amount : progress.eventTokens
     };
     this.state.users[user.id] = next;
     this.options.store.save(this.state);
-    return { tier, reward, alreadyClaimed: false, wallet: result.wallet, currency: result.currency };
+    return { tier, reward, alreadyClaimed: false, eventTokens: next.eventTokens, collection: this.publicCollection(next), wallet: result.wallet, currency: result.currency };
   }
 
   async circuitStatus(user: DiscordUser) {
@@ -499,9 +503,15 @@ export class ActivityEconomyService {
     if (!offer || offer.id !== offerId || offer.claimed || !Number.isInteger(index) || index < 0 || index >= offer.rewards.length) throw new AppError(409, "casino_transaction_conflict", "Mystery reward is unavailable.");
     const reward = offer.rewards[index]!;
     const result = reward.type === "coins" ? await requestActivityAdjustment({ transactionId: `activity-mystery-${user.id}-${offer.id}`, discordUserId: user.id, sessionId: `mystery-${offer.id}`, operation: "credit", amount: reward.amount, reason: "mystery" }, this.options.env, this.options.fetch) : await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
-    progress = { ...progress, mysteryOffer: { ...offer, claimed: true }, collectionCapsules: reward.type === "capsule" ? progress.collectionCapsules + reward.amount : progress.collectionCapsules };
+    progress = {
+      ...progress,
+      mysteryOffer: { ...offer, claimed: true },
+      collectionCapsules: reward.type === "capsule" ? progress.collectionCapsules + reward.amount : progress.collectionCapsules,
+      collectionDust: reward.type === "dust" ? progress.collectionDust + reward.amount : progress.collectionDust,
+      eventTokens: reward.type === "tokens" ? progress.eventTokens + reward.amount : progress.eventTokens
+    };
     this.state.users[user.id] = progress; this.options.store.save(this.state);
-    return { reward, wallet: result.wallet, currency: result.currency };
+    return { reward, eventTokens: progress.eventTokens, collection: this.publicCollection(progress), wallet: result.wallet, currency: result.currency };
   }
 
   async claimWeekly(user: DiscordUser, id: string) {
@@ -509,11 +519,12 @@ export class ActivityEconomyService {
     const item = progress.weekly.find((entry) => entry.id === id);
     if (!item || item.progress < item.target) throw new AppError(409, "casino_transaction_conflict", "Weekly contract is incomplete.");
     if (item.claimed) return { id, amount: 0, wallet: (await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch)).wallet, currency: "Ris", alreadyClaimed: true };
-    const result = await requestActivityAdjustment({ transactionId: `activity-weekly-${user.id}-${progress.weeklyId}-${id}`, discordUserId: user.id, sessionId: `weekly-${progress.weeklyId}-${id}`, operation: "credit", amount: item.reward, reason: "weekly" }, this.options.env, this.options.fetch);
-    item.claimed = true;
-    this.state.users[user.id] = progress;
+    const result = await requestActivityAdjustment({ transactionId: `activity-weekly-${user.id}-${progress.weeklyId}-${id}`, discordUserId: user.id, sessionId: `weekly-${progress.weeklyId}-${id}`, operation: "credit", amount: item.reward.coins, reason: "weekly" }, this.options.env, this.options.fetch);
+    const weekly = progress.weekly.map((entry) => entry.id === id ? { ...entry, claimed: true } : entry);
+    const next = { ...progress, weekly, collectionDust: progress.collectionDust + item.reward.dust, eventTokens: progress.eventTokens + item.reward.tokens };
+    this.state.users[user.id] = next;
     this.options.store.save(this.state);
-    return { id, amount: item.reward, wallet: result.wallet, currency: result.currency, alreadyClaimed: false };
+    return { id, amount: item.reward.coins, reward: item.reward, eventTokens: next.eventTokens, collection: this.publicCollection(next), wallet: result.wallet, currency: result.currency, alreadyClaimed: false };
   }
 
   async vaultStatus(user: DiscordUser) {
@@ -1115,6 +1126,7 @@ function normalizeProgress(value: unknown): ActivityProgress {
     reserve: safeNonNegativeInteger(raw.reserve, 3000),
     notes: safeNonNegativeInteger(raw.notes),
     noteRemainder: safeNonNegativeInteger(raw.noteRemainder),
+    eventTokens: safeNonNegativeInteger(raw.eventTokens),
     reliefClaimed: raw.reliefClaimed === true,
     missionDate: typeof raw.missionDate === "string" ? raw.missionDate : "",
     missions: normalizeMissions(raw.missions),
@@ -1190,6 +1202,7 @@ function initialProgress(): ActivityProgress {
     reserve: 3000,
     notes: 0,
     noteRemainder: 0,
+    eventTokens: 0,
     reliefClaimed: false,
     missionDate: "",
     missions: [],

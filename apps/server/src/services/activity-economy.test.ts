@@ -19,7 +19,7 @@ describe("ActivityEconomyService missions", () => {
 
     const weekly = await service.weeklyStatus(user);
     expect(weekly.items.find((item) => item.id === "rounds")).toMatchObject({ progress: 50, target: 50, claimed: false });
-    expect(await service.claimWeekly(user, "rounds")).toMatchObject({ amount: 2500, alreadyClaimed: false, wallet: 7500 });
+    expect(await service.claimWeekly(user, "rounds")).toMatchObject({ amount: 2500, reward: { coins: 2500, dust: 180, tokens: 2 }, collection: { dust: 180 }, eventTokens: 2, alreadyClaimed: false, wallet: 7500 });
     expect((await service.claimWeekly(user, "rounds")).alreadyClaimed).toBe(true);
   });
 

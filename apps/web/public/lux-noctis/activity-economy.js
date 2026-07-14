@@ -242,6 +242,16 @@
     collection.albums = snapshot.albums;
   }
 
+  function snapshotWeeklyProgress() {
+    if (!app.ascension) return null;
+    return JSON.parse(JSON.stringify(app.ascension.data.weekly));
+  }
+
+  function restoreWeeklyProgress(snapshot) {
+    if (!snapshot || !app.ascension) return;
+    app.ascension.data.weekly = snapshot;
+  }
+
   async function refreshSovereign() {
     const refresh = ++sovereignRefresh;
     let response = await fetch("/api/economy/sovereign", { credentials: "include" });
@@ -603,9 +613,12 @@
     const localAscensionRound = app.ascension.onRound;
     app.ascension.onRound = function (payload) {
       const collectionResources = snapshotCollectionResources();
+      const weeklyProgress = snapshotWeeklyProgress();
       const result = localAscensionRound.call(this, payload);
       restoreCollectionResources(collectionResources);
+      restoreWeeklyProgress(weeklyProgress);
       void refreshAlbums();
+      void refreshWeekly();
       return result;
     };
     app.ascension.addSeasonXp = function () {};

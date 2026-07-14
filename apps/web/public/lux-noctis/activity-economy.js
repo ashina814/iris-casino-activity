@@ -8,6 +8,8 @@
   let reliefBusy = false;
   let treasuryBusy = false;
   let missionRefresh = 0;
+  let vaultBusy = false;
+  let vaultRefresh = 0;
   const pendingPurchases = new Map();
 
   function applyDailyState(daily) {
@@ -76,6 +78,14 @@
     return payload.missions;
   }
 
+  async function requestVault() {
+    const response = await fetch("/api/economy/vault", { credentials: "include" });
+    if (!response.ok) throw new Error("vault unavailable");
+    const payload = await response.json();
+    if (!payload?.ok || !payload.vault) throw new Error("invalid vault response");
+    return payload.vault;
+  }
+
   function applyMissions(missions) {
     if (!missions || !Array.isArray(missions.items)) return;
     const localItems = new Map(app.profile.data.missions.items.map((item) => [item.id, item]));
@@ -92,6 +102,27 @@
     const refresh = ++missionRefresh;
     void requestMissions().then((missions) => {
       if (refresh === missionRefresh) applyMissions(missions);
+    }).catch(() => {});
+  }
+
+  function applyVault(vault) {
+    if (!vault || typeof vault !== "object") return;
+    const jackpot = app.profile.data.jackpot;
+    if (!jackpot) return;
+    if (Number.isInteger(vault.pot) && vault.pot >= 0) jackpot.pot = vault.pot;
+    if (Number.isInteger(vault.charge) && vault.charge >= 0) jackpot.charge = vault.charge;
+    if (typeof vault.ready === "boolean") jackpot.ready = vault.ready;
+    if (Number.isInteger(vault.claims) && vault.claims >= 0) jackpot.claims = vault.claims;
+    if (!jackpot.ready) app.jackpotOffer = null;
+    if (Number.isInteger(vault.wallet) && vault.wallet >= 0) window.__IRIS_SET_WALLET?.(vault.wallet);
+    app.profile.save();
+    app.updateHud();
+  }
+
+  function refreshVault() {
+    const refresh = ++vaultRefresh;
+    void requestVault().then((vault) => {
+      if (refresh === vaultRefresh) applyVault(vault);
     }).catch(() => {});
   }
 
@@ -177,12 +208,52 @@
     }
   };
 
+  app.claimJackpot = async function (chestIndex) {
+    if (vaultBusy) return;
+    vaultBusy = true;
+    try {
+      const response = await fetch("/api/economy/vault/claim", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chestIndex })
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.vault) throw new Error("vault claim unavailable");
+      const vault = payload.vault;
+      applyVault(vault);
+      document.querySelectorAll("[data-jackpot-chest]").forEach((button, index) => {
+        button.disabled = true;
+        button.classList.add(index === chestIndex ? "opened" : "faded");
+        button.querySelector("b").textContent = index === chestIndex ? `+${vault.amount.toLocaleString("ja-JP")} Ris` : "SEALED";
+      });
+      const reveal = document.querySelector("#jackpotReveal");
+      if (reveal) reveal.hidden = false;
+      const amount = document.querySelector("#jackpotRevealAmount");
+      if (amount) amount.textContent = `+${vault.amount.toLocaleString("ja-JP")} Ris`;
+      const text = document.querySelector("#jackpotRevealText");
+      if (text) text.textContent = vault.multiplier >= 1 ? "ECLIPSE JACKPOT" : "VAULT PRIZE";
+      this.profile.data.stats.jackpots += 1;
+      this.profile.unlock("jackpot");
+      this.profile.unlockRelic("eclipseKey");
+      this.profile.save();
+      this.audio.play("bigwin");
+      this.bigWin(vault.amount, vault.multiplier >= 1 ? "ECLIPSE JACKPOT" : "VAULT PRIZE", "RIS settlement recorded");
+    } catch {
+      this.toast("ECLIPSE VAULT", "RIS settlement could not open the vault.", "!");
+      refreshVault();
+    } finally {
+      vaultBusy = false;
+    }
+  };
+
   const recordRemoteProgress = app.recordRemoteProgress;
   app.profile.progress = function () {};
   app.recordRemoteProgress = function (...args) {
     const result = recordRemoteProgress.apply(this, args);
     void this.maybeRelief();
     refreshMissions();
+    refreshVault();
     return result;
   };
 
@@ -227,4 +298,5 @@
     .then(applyTreasuryState)
     .catch(() => {});
   refreshMissions();
+  refreshVault();
 })();

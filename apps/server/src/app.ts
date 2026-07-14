@@ -238,6 +238,26 @@ export function createApp(options: CreateAppOptions = {}) {
   );
 
   app.get(
+    "/api/economy/vault",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      res.json({ ok: true, vault: await activityEconomy.vaultStatus(user) });
+    })
+  );
+
+  app.post(
+    "/api/economy/vault/claim",
+    asyncRoute(async (req, res) => {
+      const user = getSession(req).user;
+      if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+      const parsed = z.object({ chestIndex: z.number().int().min(0).max(2) }).safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "bad_request", "Vault chest is invalid.");
+      res.json({ ok: true, vault: await activityEconomy.claimVault(user, parsed.data.chestIndex) });
+    })
+  );
+
+  app.get(
     "/api/economy/treasury",
     asyncRoute(async (req, res) => {
       const user = getSession(req).user;

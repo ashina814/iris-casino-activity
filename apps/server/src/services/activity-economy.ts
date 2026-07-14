@@ -1,4 +1,5 @@
 import type { DiscordUser } from "@iris/shared";
+import { randomInt } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
@@ -18,6 +19,11 @@ type ActivityProgress = {
   missionDate: string;
   missions: MissionProgress[];
   missionRounds: string[];
+  vaultPot: number;
+  vaultCharge: number;
+  vaultReady: boolean;
+  vaultClaims: number;
+  vaultOffer: number[] | null;
   seals: number;
   purchases: Record<TreasuryItemId, number>;
   purchaseRequests: Record<string, { itemId: TreasuryItemId; pay: TreasuryPay }>;
@@ -128,6 +134,50 @@ export class ActivityEconomyService {
     return { date: progress.missionDate, items: progress.missions, wallet: wallet.wallet, currency: wallet.currency };
   }
 
+  async vaultStatus(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    const wallet = await getWalletForDiscordUser(user.id, this.options.env, this.options.fetch);
+    return this.publicVault(progress, wallet.wallet, wallet.currency);
+  }
+
+  async claimVault(user: DiscordUser, chestIndex: number) {
+    let progress = this.progressFor(user.id);
+    if (!progress.vaultReady || progress.vaultPot < 100) {
+      throw new AppError(409, "casino_transaction_conflict", "Eclipse Vault is not ready.");
+    }
+
+    const offer = progress.vaultOffer ?? vaultOffer();
+    if (!progress.vaultOffer) {
+      progress = { ...progress, vaultOffer: offer };
+      this.state.users[user.id] = progress;
+      this.options.store.save(this.state);
+    }
+    const multiplier = offer[chestIndex];
+    if (multiplier === undefined) throw new AppError(400, "bad_request", "Vault chest is invalid.");
+
+    const claimNumber = progress.vaultClaims + 1;
+    const amount = Math.min(progress.vaultPot, Math.max(100, Math.floor(progress.vaultPot * multiplier)));
+    const result = await requestActivityAdjustment({
+      transactionId: `activity-vault-${user.id}-${claimNumber}`,
+      discordUserId: user.id,
+      sessionId: `vault-${claimNumber}`,
+      operation: "credit",
+      amount,
+      reason: "vault"
+    }, this.options.env, this.options.fetch);
+    const next = {
+      ...progress,
+      vaultPot: Math.max(0, progress.vaultPot - amount),
+      vaultCharge: 0,
+      vaultReady: false,
+      vaultClaims: claimNumber,
+      vaultOffer: null
+    };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { chestIndex, multiplier, amount, ...this.publicVault(next, result.wallet, result.currency) };
+  }
+
   async recordMissionRound(user: DiscordUser, round: TrustedMissionRound) {
     let progress = this.ensureMissionDay(user.id, this.progressFor(user.id));
     if (progress.missionRounds.includes(round.id)) {
@@ -149,6 +199,7 @@ export class ActivityEconomyService {
       wallet = result.wallet;
       currency = result.currency;
     }
+    progress = this.advanceVault(progress, round);
     progress = { ...progress, missions: items, missionRounds: [...progress.missionRounds, round.id].slice(-500) };
     this.state.users[user.id] = progress;
     this.options.store.save(this.state);
@@ -273,6 +324,19 @@ export class ActivityEconomyService {
     return next;
   }
 
+  private advanceVault(progress: ActivityProgress, round: TrustedMissionRound): ActivityProgress {
+    if (progress.vaultReady) return progress;
+    const gain = Math.min(10, Math.max(1, 2 + Math.floor(round.wager / 2500) + (round.payout > round.wager ? 1 : 0)));
+    const vaultCharge = Math.min(100, progress.vaultCharge + gain);
+    const vaultReady = vaultCharge >= 100 && progress.vaultPot >= 100;
+    return {
+      ...progress,
+      vaultCharge,
+      vaultReady,
+      vaultOffer: vaultReady && !progress.vaultReady ? vaultOffer() : progress.vaultOffer
+    };
+  }
+
   private publicTreasury(progress: ActivityProgress, wallet: number, currency: string) {
     return {
       wallet,
@@ -281,6 +345,17 @@ export class ActivityEconomyService {
       notes: progress.notes,
       seals: progress.seals,
       purchases: progress.purchases
+    };
+  }
+
+  private publicVault(progress: ActivityProgress, wallet: number, currency: string) {
+    return {
+      wallet,
+      currency,
+      pot: progress.vaultPot,
+      charge: progress.vaultCharge,
+      ready: progress.vaultReady,
+      claims: progress.vaultClaims
     };
   }
 }
@@ -347,6 +422,11 @@ function normalizeProgress(value: unknown): ActivityProgress {
     missionDate: typeof raw.missionDate === "string" ? raw.missionDate : "",
     missions: normalizeMissions(raw.missions),
     missionRounds: Array.isArray(raw.missionRounds) ? raw.missionRounds.filter((id): id is string => typeof id === "string" && id.length <= 160).slice(-500) : [],
+    vaultPot: safeNonNegativeInteger(raw.vaultPot, 5000),
+    vaultCharge: Math.min(100, safeNonNegativeInteger(raw.vaultCharge)),
+    vaultReady: raw.vaultReady === true,
+    vaultClaims: safeNonNegativeInteger(raw.vaultClaims),
+    vaultOffer: normalizeVaultOffer(raw.vaultOffer),
     seals: safeNonNegativeInteger(raw.seals),
     purchases: normalizePurchases(raw.purchases),
     purchaseRequests: normalizePurchaseRequests(raw.purchaseRequests)
@@ -364,6 +444,11 @@ function initialProgress(): ActivityProgress {
     missionDate: "",
     missions: [],
     missionRounds: [],
+    vaultPot: 5000,
+    vaultCharge: 0,
+    vaultReady: false,
+    vaultClaims: 0,
+    vaultOffer: null,
     seals: 0,
     purchases: normalizePurchases(),
     purchaseRequests: {}
@@ -391,6 +476,21 @@ function normalizeMissions(value: unknown): MissionProgress[] {
     if (!template) return [];
     return [{ ...template, progress: Math.min(template.target, safeNonNegativeInteger(raw.progress)), claimed: raw.claimed === true }];
   }).slice(0, 3);
+}
+
+function vaultOffer(): number[] {
+  const values = [0.1, 0.25, randomInt(20) === 0 ? 1 : 0.5];
+  for (let index = values.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomInt(index + 1);
+    [values[index], values[swapIndex]] = [values[swapIndex]!, values[index]!];
+  }
+  return values;
+}
+
+function normalizeVaultOffer(value: unknown): number[] | null {
+  if (!Array.isArray(value) || value.length !== 3) return null;
+  const allowed = new Set([0.1, 0.25, 0.5, 1]);
+  return value.every((item) => typeof item === "number" && allowed.has(item)) ? [...value] : null;
 }
 
 function normalizePurchases(value?: Partial<Record<TreasuryItemId, unknown>>): Record<TreasuryItemId, number> {

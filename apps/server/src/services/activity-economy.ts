@@ -471,6 +471,18 @@ export class ActivityEconomyService {
     return { artifacts: this.publicArtifacts(progress), drops };
   }
 
+  async craftArtifact(user: DiscordUser) {
+    const progress = this.progressFor(user.id);
+    if (!progress.artifactMigrated || progress.artifactShards < 400) throw new AppError(409, "casino_transaction_conflict", "Artifact crafting is unavailable.");
+    const pool = artifactItemIds.filter((id) => !progress.artifactOwned.includes(id));
+    if (!pool.length) throw new AppError(409, "casino_transaction_conflict", "All artifacts are owned.");
+    const itemId = pool[randomInt(pool.length)]!;
+    const next = { ...progress, artifactShards: progress.artifactShards - 400, artifactOwned: [...progress.artifactOwned, itemId] };
+    this.state.users[user.id] = next;
+    this.options.store.save(this.state);
+    return { artifacts: this.publicArtifacts(next), item: artifactItem(itemId) };
+  }
+
   async claimArtifactSet(user: DiscordUser, set: string) {
     const progress = this.progressFor(user.id);
     if (!progress.artifactMigrated || !artifactSets.includes(set) || progress.artifactClaims.includes(set)) throw new AppError(409, "casino_transaction_conflict", "Artifact reward is unavailable.");

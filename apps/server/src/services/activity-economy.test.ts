@@ -140,6 +140,17 @@ describe("ActivityEconomyService missions", () => {
     await expect(service.openArtifactVault(user)).rejects.toMatchObject({ code: "casino_transaction_conflict" });
   });
 
+  it("crafts an unowned artifact from server-owned shards only", async () => {
+    const store = new MemoryStore();
+    store.save({ users: { [user.id]: { artifactMigrated: true, artifactOwned: [], artifactClaims: [], artifactKeys: 0, artifactFragments: 0, artifactOpened: 0, artifactDuplicates: 0, artifactShards: 400 } } });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ wallet: 5000, currency: "Ris" }), { headers: { "content-type": "application/json" } }));
+    const service = new ActivityEconomyService({ env, fetch: fetchMock, store });
+    const craft = await service.craftArtifact(user);
+    expect(craft.artifacts.shards).toBe(0);
+    expect(craft.artifacts.owned).toContain(craft.item.id);
+    await expect(service.craftArtifact(user)).rejects.toMatchObject({ code: "casino_transaction_conflict" });
+  });
+
   it("does not accept artifact ownership changes after the initial migration", async () => {
     const store = new MemoryStore();
     store.save({ users: { [user.id]: { artifactMigrated: true, artifactOwned: ["eclipse-0"], artifactClaims: [] } } });

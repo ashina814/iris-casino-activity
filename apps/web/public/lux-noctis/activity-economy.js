@@ -722,6 +722,16 @@
       this.app.celebration.burst(.6);
       this.app.toast("ETERNAL VAULT OPEN", vault.drops.length ? vault.drops.map((item) => item.name).join(" · ") : "全秘宝完成ボーナス", "*");
     };
+    app.eternal.craftArtifact = async function () {
+      const response = await fetch("/api/economy/artifacts/craft", { method: "POST", credentials: "include" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.craft) { void refreshArtifacts(); return; }
+      applyArtifacts(payload.craft.artifacts);
+      this.app.profile.save();
+      this.render("artifacts");
+      this.app.audio.play("chime");
+      this.app.toast("ARTIFACT CRAFT COMPLETE", payload.craft.item.name, payload.craft.item.icon);
+    };
     app.eternal.updateSet = function (set) {
       const owned = Object.keys(this.data.artifacts.owned).filter((id) => id.startsWith(`${set}-`)).length;
       this.data.artifacts.sets[set] = owned;

@@ -33,9 +33,27 @@
     body[idField] = adopted.id;
     return { operation, roundId: pendingRoundId, id: adopted.id, init: { ...init, body: JSON.stringify(body) } };
   }
+  function activeStartGame(url, init) {
+    if ((init?.method || "GET").toUpperCase() !== "POST") return null;
+    const match = url.match(/\/api\/games\/([^/]+)\/(rounds|tickets)$/);
+    if (!match) return null;
+    const game = match[1];
+    if (!window.__IRIS_ACTIVE_ROUNDS__?.some((round) => round.game === game)) return null;
+    return { game, ticket: match[2] === "tickets" };
+  }
+  function resumedPayload(active, ticket) {
+    const round = { ...active.state, id: active.roundId, roundId: active.roundId, ticketId: active.roundId, phase: active.phase, wallet: active.wallet };
+    return ticket ? { ok: true, ticket: round } : { ok: true, round };
+  }
   const originalFetch = window.fetch.bind(window);
   window.fetch = async function (...args) {
     const url = String(args[0] instanceof Request ? args[0].url : args[0]);
+    const activeStart = activeStartGame(url, args[1]);
+    if (activeStart) {
+      const response = await originalFetch(`/api/games/${encodeURIComponent(activeStart.game)}/active-round`, { credentials: "include", cache: "no-store" });
+      const payload = await response.json().catch(() => null);
+      if (response.ok && payload?.round) return new Response(JSON.stringify(resumedPayload(payload.round, activeStart.ticket)), { status: 200, headers: { "content-type": "application/json" } });
+    }
     const request = multiStepRequest(url, args[1]);
     if (request?.stale) throw new Error("A previous action needs server recovery before a new request can be sent.");
     const response = await originalFetch(args[0], request?.init || args[1]);

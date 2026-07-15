@@ -31,7 +31,7 @@
     const adopted = window.__IRIS_ACTIVITY_REQUESTS__?.adopt(operation, body, { roundId: pendingRoundId, idField });
     if (!adopted || adopted.stale) return { stale: true, operation, roundId: pendingRoundId };
     body[idField] = adopted.id;
-    return { operation, roundId: pendingRoundId, id: adopted.id, init: { ...init, body: JSON.stringify(body) } };
+    return { game, operation, roundId: pendingRoundId, id: adopted.id, init: { ...init, body: JSON.stringify(body) } };
   }
   function activeStartGame(url, init) {
     if ((init?.method || "GET").toUpperCase() !== "POST") return null;
@@ -46,6 +46,13 @@
     return ticket ? { ok: true, ticket: round } : { ok: true, round };
   }
   const originalFetch = window.fetch.bind(window);
+  async function confirmRecovery(request) {
+    const response = await originalFetch(`/api/games/${encodeURIComponent(request.game)}/active-round`, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (payload?.round?.phase === "reconciliation_failed") return "support_required";
+    if (payload?.round) return "resume_required";
+    return "ambiguous";
+  }
   window.fetch = async function (...args) {
     const url = String(args[0] instanceof Request ? args[0].url : args[0]);
     const activeStart = activeStartGame(url, args[1]);
@@ -54,12 +61,14 @@
       const payload = await response.json().catch(() => null);
       if (response.ok && payload?.round) return new Response(JSON.stringify(resumedPayload(payload.round, activeStart.ticket)), { status: 200, headers: { "content-type": "application/json" } });
     }
+    if ((args[1]?.method || "GET").toUpperCase() === "POST" && url.includes("/api/games/")) await window.__IRIS_ACTIVITY_REQUESTS__?.waitForUserScope();
     const request = multiStepRequest(url, args[1]);
     if (request?.stale) throw new Error("A previous action needs server recovery before a new request can be sent.");
     const response = await originalFetch(args[0], request?.init || args[1]);
     if (request && response.ok) window.__IRIS_ACTIVITY_REQUESTS__?.complete(request.operation, request.id, { roundId: request.roundId });
-    if (request && !response.ok) response.clone().json().then((payload) => {
-      if (["casino_transaction_conflict", "casino_transaction_not_found"].includes(payload?.error?.code)) window.__IRIS_ACTIVITY_REQUESTS__?.discard(request.operation, request.roundId);
+    if (request && !response.ok) response.clone().json().then(async (payload) => {
+      if (["casino_transaction_conflict", "casino_transaction_not_found"].includes(payload?.error?.code)) await confirmRecovery(request);
+      if (payload?.error?.recovery === "terminal") window.__IRIS_ACTIVITY_REQUESTS__?.discard(request.operation, request.roundId);
     }).catch(() => {});
     if (response.ok && url.includes("/api/games/")) response.clone().json().then((payload) => {
       const round = payload?.round || payload?.ticket;

@@ -24,7 +24,7 @@ import { FileScratchStore, ScratchService } from "./casino/scratch.js";
 import { FileLegacyGameStore, LegacyGamesService } from "./casino/legacy-games.js";
 import { FileSlotsRoundStore, SlotsService } from "./casino/slots.js";
 import { loadEnv, type ServerEnv } from "./env.js";
-import { AppError, asyncRoute, sendError } from "./errors.js";
+import { annotateErrorStage, AppError, asyncRoute, sendError, unexpectedErrorLogDetails } from "./errors.js";
 import { createRateLimit } from "./middleware/rate-limit.js";
 import { getWalletForDiscordUser } from "./services/wallet.js";
 import { ActivityEconomyService, FileActivityProgressStore, isPurchaseId, isTreasuryItemId, isTreasuryPay } from "./services/activity-economy.js";
@@ -140,7 +140,6 @@ export function createApp(options: CreateAppOptions = {}) {
   });
   app.use("/api", createRateLimit({ max: 600, windowMs: 60_000, key: requestIp }));
   app.use("/api/auth", createRateLimit({ max: 60, windowMs: 60_000, key: requestIp }));
-  app.use("/api/games", createRateLimit({ max: 300, windowMs: 60_000, key: requestPlayer }));
   app.use(
     cookieSession({
       name: "iris_session",
@@ -153,6 +152,7 @@ export function createApp(options: CreateAppOptions = {}) {
       maxAge: 1000 * 60 * 60 * 8
     })
   );
+  app.use("/api/games", createRateLimit({ max: 300, windowMs: 60_000, key: requestPlayer }));
 
   app.get("/api/health", (_req, res) => {
     res.json({
@@ -725,8 +725,23 @@ export function createApp(options: CreateAppOptions = {}) {
       }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Roulette spin is invalid.");
 
-      const round = await roulette.spin(user, parsed.data.spinId, parsed.data.bets);
-      await recordActivityRound(activityEconomy, party, user, { id: `roulette-${round.spinId}`, wager: round.total, payout: round.payout ?? 0, events: round.number !== null && round.bets.some((bet) => bet.selection === `n:${round.number}`) ? { rouletteStraight: 1 } : {} });
+      let round: Awaited<ReturnType<typeof roulette.spin>>;
+      try {
+        round = await roulette.spin(user, parsed.data.spinId, parsed.data.bets);
+      } catch (error) {
+        throw annotateErrorStage(error, "roulette.spin");
+      }
+      try {
+        await recordActivityRound(activityEconomy, party, user, { id: `roulette-${round.spinId}`, wager: round.total, payout: round.payout ?? 0, events: round.number !== null && round.bets.some((bet) => bet.selection === `n:${round.number}`) ? { rouletteStraight: 1 } : {} });
+      } catch (error) {
+        const staged = annotateErrorStage(error, "recordActivityRound");
+        logger.error("roulette_progress_record_failed", {
+          method: req.method,
+          path: req.path,
+          spinId: round.spinId,
+          ...unexpectedErrorLogDetails(staged)
+        });
+      }
       res.json({ ok: true, spin: round });
     })
   );
@@ -779,13 +794,16 @@ export function createApp(options: CreateAppOptions = {}) {
     next(new AppError(404, "not_found", "Route was not found."));
   });
 
-  const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
+  const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
     const appError = error instanceof AppError
       ? error
       : new AppError(500, "internal_error", "An internal error occurred.");
     logger.error("api_error", {
       code: appError.code,
-      status: appError.status
+      status: appError.status,
+      method: req.method,
+      path: req.path,
+      ...(error instanceof AppError ? {} : unexpectedErrorLogDetails(error))
     });
     sendError(res, appError);
   };

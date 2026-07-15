@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
-import { AppError } from "../errors.js";
+import { annotateErrorStage, AppError } from "../errors.js";
 import { reserveCasinoBet, settleCasinoReservation } from "../services/casino-economy.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -59,29 +59,51 @@ export class RouletteService {
     const normalized = normalizeBets(bets);
     const round: RouletteRound = { spinId, discordUserId: user.id, bets: normalized, total: normalized.reduce((sum, bet) => sum + bet.amount, 0), number: null, payout: null, wallet: null, phase: "reserving" };
     this.rounds.set(spinId, round);
-    this.save();
+    this.save("roulette.state.save.initial");
     await this.resume(round);
     return round;
   }
 
   private async resume(round: RouletteRound): Promise<void> {
     if (round.phase === "reserving") {
-      const reservation = await reserveCasinoBet({ transactionId: `roulette-${round.spinId}`, discordUserId: round.discordUserId, sessionId: `roulette-${round.spinId}`, game: "roulette", bet: round.total }, this.options.env, this.options.fetch);
+      const reservation = await this.reserve(round);
       round.wallet = reservation.wallet;
       round.number ??= this.options.number?.() ?? randomInt(37);
       round.payout = round.bets.reduce((sum, bet) => sum + bet.amount * multiplier(bet.selection, round.number!), 0);
       round.phase = "settling";
-      this.save();
+      this.save("roulette.state.save.before_settle");
     }
     if (round.phase === "settling") {
-      const settlement = await settleCasinoReservation(`roulette-${round.spinId}`, { payout: round.payout ?? 0 }, this.options.env, this.options.fetch);
+      const settlement = await this.settle(round);
       round.wallet = settlement.wallet;
       round.phase = "settled";
-      this.save();
+      this.save("roulette.state.save.settled");
     }
   }
 
-  private save(): void { this.options.store.save([...this.rounds.values()]); }
+  private async reserve(round: RouletteRound) {
+    try {
+      return await reserveCasinoBet({ transactionId: `roulette-${round.spinId}`, discordUserId: round.discordUserId, sessionId: `roulette-${round.spinId}`, game: "roulette", bet: round.total }, this.options.env, this.options.fetch);
+    } catch (error) {
+      throw annotateErrorStage(error, "roulette.reserve");
+    }
+  }
+
+  private async settle(round: RouletteRound) {
+    try {
+      return await settleCasinoReservation(`roulette-${round.spinId}`, { payout: round.payout ?? 0 }, this.options.env, this.options.fetch);
+    } catch (error) {
+      throw annotateErrorStage(error, "roulette.settle");
+    }
+  }
+
+  private save(stage: string): void {
+    try {
+      this.options.store.save([...this.rounds.values()]);
+    } catch (error) {
+      throw annotateErrorStage(error, stage);
+    }
+  }
 }
 
 function normalizeBets(input: RouletteBet[]): RouletteBet[] {

@@ -14,11 +14,30 @@
     if (irisWallet) irisWallet.textContent = value;
   }
 
+  function formatRis(amount) {
+    return `${new Intl.NumberFormat("ja-JP").format(Math.max(0, Math.floor(amount || 0)))} Ris`;
+  }
+
+  const renderRoulette = core.RouletteGame.prototype.render;
+  core.RouletteGame.prototype.render = function () {
+    renderRoulette.call(this);
+    const total = this.total();
+    const bet = document.querySelector("#rouletteBet");
+    if (bet) bet.textContent = formatRis(total);
+    const summary = document.querySelector("#rouletteBetSummary");
+    if (summary && this.bets.size) {
+      summary.querySelectorAll("span").forEach((entry) => {
+        const amount = [...this.bets.values()][[...summary.children].indexOf(entry)];
+        if (Number.isFinite(amount)) entry.lastChild.textContent = formatRis(amount);
+      });
+    }
+  };
+
   core.RouletteGame.prototype.spin = async function () {
     if (this.spinning) return;
     const wager = this.total();
     if (!wager) {
-      this.app.toast("PLACE A BET", "Choose one or more roulette bets first.", "L");
+      this.app.toast("PLACE A BET", "Choose one or more roulette bets first.", "R");
       return;
     }
 
@@ -49,7 +68,7 @@
 
       const color = result === 0 ? "GREEN" : core.RED_NUMBERS.has(result) ? "RED" : "BLACK";
       document.querySelector("#rouletteResult").textContent = `${result} · ${color}`;
-      document.querySelector("#rouletteResultSub").textContent = payload.spin.payout ? `${core.formatL(payload.spin.payout)} RETURN` : "THE HOUSE TAKES THIS ROUND";
+      document.querySelector("#rouletteResultSub").textContent = payload.spin.payout ? `${formatRis(payload.spin.payout)} RETURN` : "THE HOUSE TAKES THIS ROUND";
       document.querySelector("#rouletteStatus").textContent = `RESULT · ${result} ${color}`;
       this.history.unshift(result);
       this.history = this.history.slice(0, 20);
@@ -61,7 +80,7 @@
       updateWallet(payload.spin.wallet);
       window.__IRIS_ACTIVITY_REQUESTS__.complete("roulette", spinId);
     } catch (error) {
-      this.app.toast("ROULETTE UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L");
+      this.app.toast("ROULETTE UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "R");
     } finally {
       this.spinning = false;
       this.render();

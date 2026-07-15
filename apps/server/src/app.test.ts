@@ -409,4 +409,72 @@ describe("server API", () => {
     expect(JSON.stringify(res.body)).not.toContain("super-secret-economy-key");
     expect(JSON.stringify(res.body)).not.toContain("Authorization");
   });
+
+  it("logs unexpected roulette failures with a safe stage and request context", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "iris-roulette-error-"));
+    try {
+      const blockedDirectory = join(temp, "blocked");
+      const logger = { error: vi.fn() };
+      const app = createApp({
+        env: { ...baseEnv, ROULETTE_STATE_PATH: join(blockedDirectory, "rounds.json"), PARTY_STATE_PATH: join(temp, "party.json") },
+        logger
+      });
+      await app.locals.reconciliation;
+      await writeFile(blockedDirectory, "not a directory");
+      const agent = request.agent(app);
+      await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+
+      await agent.post("/api/games/roulette/spins").send({ spinId: "request-body-must-not-be-logged", bets: [{ selection: "n:7", amount: 100 }] }).expect(500);
+
+      const [, details] = logger.error.mock.calls.find(([message]) => message === "api_error")!;
+      expect(details).toMatchObject({
+        code: "internal_error",
+        status: 500,
+        method: "POST",
+        path: "/api/games/roulette/spins",
+        stage: "roulette.state.save.initial",
+        errorName: "Error"
+      });
+      expect(details.errorMessage).toBeTruthy();
+      expect(details.errorStack).toBeTruthy();
+      expect(JSON.stringify(details)).not.toContain("request-body-must-not-be-logged");
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a settled roulette spin when post-settlement progress persistence fails", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "iris-roulette-progress-"));
+    try {
+      const blockedDirectory = join(temp, "blocked");
+      const logger = { error: vi.fn() };
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ ok: true, wallet: 49_900, currency: "Ris", transaction: { transactionId: "roulette-progress-safe", sessionId: "roulette-progress-safe", game: "roulette", bet: 100, status: "reserved", payout: null } }))
+        .mockResolvedValueOnce(jsonResponse({ ok: true, wallet: 49_900, currency: "Ris", transaction: { transactionId: "roulette-progress-safe", sessionId: "roulette-progress-safe", game: "roulette", bet: 100, status: "settled", payout: 0 } }));
+      const app = createApp({
+        env: {
+          ...baseEnv,
+          ROULETTE_STATE_PATH: join(temp, "roulette.json"),
+          ACTIVITY_PROGRESS_STATE_PATH: join(blockedDirectory, "progress.json"),
+          PARTY_STATE_PATH: join(temp, "party.json")
+        },
+        fetch: fetchMock,
+        logger
+      });
+      await app.locals.reconciliation;
+      await writeFile(blockedDirectory, "not a directory");
+      const agent = request.agent(app);
+      await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+
+      const res = await agent.post("/api/games/roulette/spins").send({ spinId: "progress-safe", bets: [{ selection: "n:7", amount: 100 }] });
+
+      expect(res.status).toBe(200);
+      expect(res.body.spin).toMatchObject({ spinId: "progress-safe", phase: "settled", wallet: 49_900 });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [, details] = logger.error.mock.calls.find(([message]) => message === "roulette_progress_record_failed")!;
+      expect(details).toMatchObject({ stage: "recordActivityRound", spinId: "progress-safe" });
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
 });

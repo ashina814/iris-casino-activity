@@ -30,9 +30,17 @@ export async function getDiscordAuthorizationCode(): Promise<string> {
     throw new Error("Discord Activity client ID is not configured.");
   }
 
-  const { DiscordSDK } = await import("@discord/embedded-app-sdk");
+  const { Common, DiscordSDK } = await import("@discord/embedded-app-sdk");
   const sdk = new DiscordSDK(clientId);
   await sdk.ready();
+
+  // Lux Noctis is a desktop-first table experience. Request a wide Activity surface
+  // before authentication so Discord does not retain the compact portrait frame.
+  await sdk.commands.setOrientationLockState({
+    lock_state: Common.OrientationLockStateTypeObject.LANDSCAPE,
+    picture_in_picture_lock_state: Common.OrientationLockStateTypeObject.LANDSCAPE,
+    grid_lock_state: Common.OrientationLockStateTypeObject.LANDSCAPE
+  });
 
   const commands = sdk.commands as unknown as AuthorizeCommand;
   const result = await commands.authorize({

@@ -20,6 +20,8 @@ describe("App", () => {
 
     const frame = screen.getByTitle("LUX NOCTIS Treasury Reform");
     expect(frame).toHaveAttribute("src", "/lux-noctis/index.html");
+    expect(frame.parentElement).toHaveClass("lux-casino-screen");
+    expect(frame.closest("main")).toHaveClass("activity-shell--lux");
 
     window.dispatchEvent(new MessageEvent("message", {
       origin: "https://untrusted.example",

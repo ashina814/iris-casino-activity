@@ -108,7 +108,12 @@ export function createApp(options: CreateAppOptions = {}) {
   if (options.webDistPath) {
     app.use(express.static(options.webDistPath, {
       setHeaders(res, path) {
-        if (path.endsWith("index.html")) {
+        const normalizedPath = path.replaceAll("\\", "/");
+        // Lux Noctis files are not fingerprinted, so clients must revalidate them on every Activity launch.
+        if (
+          path.endsWith("index.html")
+          || (normalizedPath.includes("/lux-noctis/") && /\.(?:css|html|js)$/u.test(normalizedPath))
+        ) {
           res.setHeader("Cache-Control", "no-store");
           return;
         }

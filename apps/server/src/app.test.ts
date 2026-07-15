@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
@@ -151,6 +154,26 @@ describe("server API", () => {
     expect(policy).toContain("https://discordapp.com");
     expect(policy).toContain("https://*.discordapp.com");
     expect(policy).toContain("https://*.discordsays.com");
+  });
+
+  it("does not cache mutable Lux Noctis scripts and styles", async () => {
+    const webDistPath = await mkdtemp(join(tmpdir(), "iris-casino-static-"));
+    await mkdir(join(webDistPath, "lux-noctis"));
+    await writeFile(join(webDistPath, "index.html"), "<main>root</main>");
+    await writeFile(join(webDistPath, "lux-noctis", "index.html"), "<main>lux</main>");
+    await writeFile(join(webDistPath, "lux-noctis", "activity-bridge.js"), "window.__IRIS_SET_WALLET = null;");
+    await writeFile(join(webDistPath, "lux-noctis", "styles.css"), "body { color: white; }");
+    await writeFile(join(webDistPath, "assets.svg"), "<svg></svg>");
+
+    try {
+      const app = createApp({ env: baseEnv, webDistPath, logger: silentLogger });
+
+      expect((await request(app).get("/lux-noctis/activity-bridge.js")).headers["cache-control"]).toBe("no-store");
+      expect((await request(app).get("/lux-noctis/styles.css")).headers["cache-control"]).toBe("no-store");
+      expect((await request(app).get("/assets.svg")).headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+    } finally {
+      await rm(webDistPath, { recursive: true, force: true });
+    }
   });
 
   it("returns 401 for unauthenticated /api/wallet", async () => {

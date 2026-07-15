@@ -43,6 +43,7 @@
 
   fetch("/api/wallet", { credentials: "include" })
     .then((response) => {
+      if (response.status === 401) throw new Error("authentication required");
       if (!response.ok) throw new Error("wallet unavailable");
       return response.json();
     })
@@ -50,7 +51,11 @@
       if (!Number.isInteger(payload.wallet) || payload.wallet < 0) throw new Error("invalid wallet");
       setWallet(payload.wallet);
     })
-    .catch(() => {
-      value.textContent = "Unavailable";
+    .catch((error) => {
+      const authenticationRequired = error instanceof Error && error.message === "authentication required";
+      value.textContent = authenticationRequired ? "Discord 認証が必要" : "Unavailable";
+      badge.title = authenticationRequired
+        ? "Discord Activity 内で認証を完了すると RIS 残高を表示します。"
+        : "IRIS Economy から RIS 残高を取得できませんでした。";
     });
 })();

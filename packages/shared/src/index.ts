@@ -69,6 +69,14 @@ export const CasinoTransactionSchema = z.object({
 
 export type CasinoTransaction = z.infer<typeof CasinoTransactionSchema>;
 
+export const CasinoTransactionResponseSchema = z.object({
+  ok: z.literal(true),
+  currency: z.literal("Ris"),
+  transaction: CasinoTransactionSchema
+});
+
+export type CasinoTransactionResponse = z.infer<typeof CasinoTransactionResponseSchema>;
+
 export const CasinoMutationResponseSchema = z.object({
   ok: z.literal(true),
   wallet: z.number().int().nonnegative(),

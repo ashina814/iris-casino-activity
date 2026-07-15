@@ -10,7 +10,8 @@ type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 type Game = "holdem" | "tower" | "threecard" | "derby" | "ascent" | "arcana" | "moonshot";
 type Phase = "reserving" | "active" | "settling" | "settled";
 type Card = { rank: string; suit: "S" | "H" | "D" | "C" };
-type Round = { id: string; discordUserId: string; game: Game; bet: number; phase: Phase; payout: number | null; wallet: number | null; state: Record<string, unknown>; lastActionId: string | null };
+type PendingAdditionalWager = { actionId: string; action: "call" | "play"; transactionId: string; bet: number };
+type Round = { id: string; discordUserId: string; game: Game; bet: number; phase: Phase; payout: number | null; wallet: number | null; state: Record<string, unknown>; lastActionId: string | null; lastActionKey?: string; pendingAdditionalWager?: PendingAdditionalWager };
 export interface LegacyGameStore { load(): Round[]; save(rounds: Round[]): void }
 export class FileLegacyGameStore implements LegacyGameStore {
   constructor(private readonly path: string) {}
@@ -21,7 +22,7 @@ export class FileLegacyGameStore implements LegacyGameStore {
 export class LegacyGamesService {
   private readonly rounds: Map<string, Round>;
   constructor(private readonly options: { env: ServerEnv; fetch: FetchLike; store: LegacyGameStore }) { this.rounds = new Map(options.store.load().map((round) => [round.id, round])); }
-  async reconcileAll() { for (const round of this.rounds.values()) if (round.phase === "reserving" || round.phase === "settling") await this.resume(round); }
+  async reconcileAll() { await Promise.all([...this.rounds.values()].filter((round) => round.phase === "reserving" || round.phase === "settling" || Boolean(round.pendingAdditionalWager)).map(async (round) => { try { await this.resume(round); } catch (error) { console.error("casino_round_reconcile_failed", { game: round.game, roundId: round.id, phase: round.phase, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: error instanceof Error ? error.message : "unknown reconciliation error" }); } })); }
   async start(user: DiscordUser, game: Game, id: string, bet: number, extra: Record<string, unknown> = {}) {
     this.validate(game, id, bet); const existing = this.rounds.get(id);
     if (existing) { if (existing.discordUserId !== user.id || existing.game !== game || existing.bet !== bet) throw conflict(); await this.resume(existing); return this.public(existing); }
@@ -31,8 +32,13 @@ export class LegacyGamesService {
   }
   async action(user: DiscordUser, id: string, actionId: string, action: string, extra: Record<string, unknown> = {}) {
     const round = this.require(user, id); if (!valid(actionId)) throw new AppError(400, "bad_request", "Game action is invalid."); await this.resume(round);
-    if (round.lastActionId === actionId) return this.public(round);
-    if (round.phase !== "active") throw conflict(); round.lastActionId = actionId;
+    const actionKey = JSON.stringify({ action, door: extra.door ?? null, index: extra.index ?? null });
+    if (round.lastActionId === actionId) { if (round.lastActionKey && round.lastActionKey !== actionKey) throw conflict(); await this.resume(round); return this.public(round); }
+    if (round.pendingAdditionalWager || round.phase !== "active") throw conflict(); round.lastActionId = actionId; round.lastActionKey = actionKey;
+    if ((round.game === "holdem" && action === "call") || (round.game === "threecard" && action === "play")) {
+      round.pendingAdditionalWager = { actionId, action, transactionId: `${round.game}-${round.id}-1`, bet: round.game === "holdem" ? round.bet * 2 : round.bet };
+      this.save(); await this.resume(round); return this.public(round);
+    }
     switch (round.game) {
       case "tower": this.tower(round, action, extra); break;
       case "holdem": await this.holdem(round, action); break;
@@ -52,6 +58,14 @@ export class LegacyGamesService {
       else round.phase = "active";
       this.save();
     }
+    if (round.phase === "active" && round.pendingAdditionalWager) {
+      const pending = round.pendingAdditionalWager;
+      await reserveCasinoBet({ transactionId: pending.transactionId, discordUserId: round.discordUserId, sessionId: `${round.game}-${round.id}`, game: round.game, bet: pending.bet }, this.options.env, this.options.fetch);
+      if (round.game === "holdem") await this.holdem(round, "call", true);
+      else if (round.game === "threecard") await this.threecard(round, "play", true);
+      round.pendingAdditionalWager = undefined;
+      this.save();
+    }
     if (round.phase === "settling") {
       const settled = await settleCasinoReservation(`${round.game}-${round.id}-0`, { payout: round.payout ?? 0 }, this.options.env, this.options.fetch);
       round.wallet = settled.wallet;
@@ -67,19 +81,19 @@ export class LegacyGamesService {
     s.multiplier *= 1.62 + s.floor * .03; if (s.floor >= 10) { round.payout = Math.floor(round.bet * s.multiplier * 1.35); round.phase = "settling"; return; }
     s.floor++; if (s.floor === 4 || s.floor === 7) s.ward = Math.max(s.ward, 1); s.traps = traps(); s.revealed = null;
   }
-  private async holdem(round: Round, action: string) {
+  private async holdem(round: Round, action: string, reserved = false) {
     const s = round.state as HoldemState; if (action === "fold") { round.payout = 0; round.phase = "settling"; return; } if (action !== "call") throw new AppError(400, "bad_request", "Holdem action is invalid.");
-    await reserveCasinoBet({ transactionId: `holdem-${round.id}-1`, discordUserId: round.discordUserId, sessionId: `holdem-${round.id}`, game: "holdem", bet: round.bet * 2 }, this.options.env, this.options.fetch);
+    if (!reserved) await reserveCasinoBet({ transactionId: `holdem-${round.id}-1`, discordUserId: round.discordUserId, sessionId: `holdem-${round.id}`, game: "holdem", bet: round.bet * 2 }, this.options.env, this.options.fetch);
     s.board.push(draw(s.deck), draw(s.deck)); const p = score(s.player.concat(s.board)), d = score(s.dealer.concat(s.board)); s.playerRank = p.rank; s.dealerRank = d.rank;
     const dealerQualifies = d.rank >= 1 && (d.rank > 1 || d.tie[0]! >= 4);
     round.payout = p.value > d.value ? Math.floor(round.bet * [5.2, 5.2, 5.2, 5.2, 6, 7, 8, 13, 22][p.rank]!) : p.value === d.value || !dealerQualifies ? round.bet * 3 : 0; round.phase = "settling";
   }
-  private async threecard(round: Round, action: string) {
+  private async threecard(round: Round, action: string, reserved = false) {
     const s = round.state as ThreeState; const player = score3(s.player), dealer = score3(s.dealer); s.playerEval = player; s.dealerEval = dealer;
     const pair = s.pairPlus ? round.bet * (player.pairPay + 1) : 0;
     if (action === "fold") { round.payout = pair; round.phase = "settling"; return; }
     if (action !== "play") throw new AppError(400, "bad_request", "Three Card action is invalid.");
-    await reserveCasinoBet({ transactionId: `threecard-${round.id}-1`, discordUserId: round.discordUserId, sessionId: `threecard-${round.id}`, game: "threecard", bet: round.bet }, this.options.env, this.options.fetch);
+    if (!reserved) await reserveCasinoBet({ transactionId: `threecard-${round.id}-1`, discordUserId: round.discordUserId, sessionId: `threecard-${round.id}`, game: "threecard", bet: round.bet }, this.options.env, this.options.fetch);
     const compare = player.value - dealer.value; let main = !dealer.qualifies ? round.bet * 3 : compare > 0 ? round.bet * 4 : compare === 0 ? round.bet * 2 : 0; main += round.bet * player.anteBonus; round.payout = main + pair; round.phase = "settling";
   }
   private ascent(round: Round, action: string) { const s = round.state as AscentState; if (action !== "cash" && action !== "tick") throw new AppError(400, "bad_request", "Ascent action is invalid."); const multiplier = Math.max(1, Math.exp((Date.now() - s.startedAt) / 7200)); if (s.autoCash > 0 && s.autoCash < s.crashPoint && multiplier >= s.autoCash) { s.multiplier = s.autoCash; round.payout = Math.floor(round.bet * s.autoCash); round.phase = "settling"; return; } s.multiplier = multiplier; if (multiplier >= s.crashPoint) { round.payout = 0; round.phase = "settling"; return; } if (action === "cash") { round.payout = Math.floor(round.bet * multiplier); round.phase = "settling"; } }

@@ -1,8 +1,10 @@
 import {
   CasinoMutationResponseSchema,
+  CasinoTransactionResponseSchema,
   CasinoReservationRequestSchema,
   CasinoSettlementRequestSchema,
   type CasinoMutationResponse,
+  type CasinoTransactionResponse,
   type CasinoReservationRequest,
   type CasinoSettlementRequest
 } from "@iris/shared";
@@ -82,6 +84,45 @@ export async function cancelCasinoReservation(
     env,
     fetchFn
   );
+}
+
+export async function getCasinoTransaction(
+  transactionId: string,
+  env: ServerEnv,
+  fetchFn: FetchLike
+): Promise<CasinoTransactionResponse> {
+  if (!isCasinoIdentifier(transactionId)) {
+    throw new AppError(400, "bad_request", "Casino transaction is invalid.");
+  }
+  if (env.IRIS_MOCK_WALLET) {
+    const transaction = mockTransactions.get(transactionId);
+    if (!transaction) throw new AppError(404, "casino_transaction_not_found", "Casino transaction was not found.");
+    return { ok: true, currency: "Ris", transaction: { transactionId: transaction.transactionId, sessionId: transaction.sessionId, game: transaction.game, bet: transaction.bet, status: transaction.status, payout: transaction.payout } };
+  }
+  if (!env.IRIS_ECONOMY_API_KEY) {
+    throw new AppError(503, "economy_unavailable", "Casino economy is unavailable.");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), env.ECONOMY_API_TIMEOUT_MS);
+  const baseUrl = env.IRIS_ECONOMY_API_BASE_URL.replace(/\/+$/, "");
+  let response: Response;
+  try {
+    response = await fetchFn(`${baseUrl}/internal/v1/casino/transactions/${encodeURIComponent(transactionId)}`, {
+      method: "GET",
+      headers: { accept: "application/json", authorization: `Bearer ${env.IRIS_ECONOMY_API_KEY}` },
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (isAbortError(error)) throw new AppError(504, "economy_timeout", "Casino economy timed out.");
+    throw new AppError(502, "economy_unavailable", "Casino economy is unavailable.");
+  } finally {
+    clearTimeout(timeout);
+  }
+  const payload = await parseResponse(response);
+  if (!response.ok) throw mapEconomyFailure(response.status, payload);
+  const parsed = CasinoTransactionResponseSchema.safeParse(payload);
+  if (!parsed.success) throw new AppError(502, "invalid_economy_response", "Casino economy response was invalid.");
+  return parsed.data;
 }
 
 async function requestCasinoMutation(

@@ -78,27 +78,24 @@ export function createApp(options: CreateAppOptions = {}) {
   const activityEconomy = new ActivityEconomyService({ env, fetch: fetchFn, store: new FileActivityProgressStore(env.ACTIVITY_PROGRESS_STATE_PATH) });
   const party = new PartyService({ store: new FilePartyStore(env.PARTY_STATE_PATH) });
   const duels = new DuelService(new FileDuelStore(env.DUEL_STATE_PATH));
-  const reconciliation = Promise.all([
-    roulette.reconcileAll(),
-    slots.reconcileAll(),
-    baccarat.reconcileAll(),
-    poker.reconcileAll(),
-    sicbo.reconcileAll(),
-    keno.reconcileAll(),
-    dragon.reconcileAll(),
-    wheel.reconcileAll(),
-    craps.reconcileAll(),
-    plinko.reconcileAll(),
-    hilo.reconcileAll(),
-    mines.reconcileAll(),
-    war.reconcileAll(),
-    bingo.reconcileAll(),
-    scratch.reconcileAll(),
-    legacyGames.reconcileAll()
-  ]);
-  void reconciliation.catch((error: unknown) => logger.error("casino_reconcile_failed", {
-    message: error instanceof Error ? error.message : "unknown reconciliation error"
-  }));
+  const reconciliationTargets = [
+    ["roulette", roulette.reconcileAll()], ["slots", slots.reconcileAll()], ["baccarat", baccarat.reconcileAll()], ["poker", poker.reconcileAll()],
+    ["sicbo", sicbo.reconcileAll()], ["keno", keno.reconcileAll()], ["dragon", dragon.reconcileAll()], ["wheel", wheel.reconcileAll()],
+    ["craps", craps.reconcileAll()], ["plinko", plinko.reconcileAll()], ["hilo", hilo.reconcileAll()], ["mines", mines.reconcileAll()],
+    ["war", war.reconcileAll()], ["bingo", bingo.reconcileAll()], ["scratch", scratch.reconcileAll()], ["legacy", legacyGames.reconcileAll()]
+  ] as const;
+  const reconciliation = Promise.allSettled(reconciliationTargets.map(([, task]) => task)).then((results) => {
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        const error = result.reason;
+        logger.error("casino_reconcile_failed", {
+          game: reconciliationTargets[index]![0],
+          errorName: error instanceof Error ? error.name : "NonErrorThrown",
+          errorMessage: error instanceof Error ? error.message : "unknown reconciliation error"
+        });
+      }
+    });
+  });
   app.locals.reconciliation = reconciliation;
 
   app.disable("x-powered-by");
@@ -732,7 +729,7 @@ export function createApp(options: CreateAppOptions = {}) {
         throw annotateErrorStage(error, "roulette.spin");
       }
       try {
-        await recordActivityRound(activityEconomy, party, user, { id: `roulette-${round.spinId}`, wager: round.total, payout: round.payout ?? 0, events: round.number !== null && round.bets.some((bet) => bet.selection === `n:${round.number}`) ? { rouletteStraight: 1 } : {} });
+        await recordActivityRound(activityEconomy, party, user, { id: `roulette-${round.spinId}`, wager: round.total, payout: round.payout ?? 0, events: round.number !== null && round.bets.some((bet) => bet.selection === `n:${round.number}`) ? { rouletteStraight: 1 } : {} }, logger, "roulette_progress_record_failed", round.spinId);
       } catch (error) {
         const staged = annotateErrorStage(error, "recordActivityRound");
         logger.error("roulette_progress_record_failed", {
@@ -881,12 +878,20 @@ async function recordMissionIfSettled(activityEconomy: ActivityEconomyService, p
   await recordActivityRound(activityEconomy, party, user, { id: `${game}-${id}`, wager, payout: payout ?? 0, score: sovereign?.score, sovereignEvents: { ...sovereign?.events, ...(game === "scratch" && (payout ?? 0) > wager ? { scratchWin: true } : {}) } });
 }
 
-async function recordActivityRound(activityEconomy: ActivityEconomyService, party: PartyService, user: DiscordUser, round: Parameters<ActivityEconomyService["recordMissionRound"]>[1]) {
-  const game = round.game ?? round.id.split("-", 1)[0];
-  const modifiers = activityEconomy.partyModifiers(user, game);
-  if (round.payout > round.wager) party.recordTrustedWin(user.id, round.payout - round.wager, modifiers.party);
-  const raidDamage = party.recordTrustedRound(user.id, round.wager, round.payout, modifiers);
-  await activityEconomy.recordMissionRound(user, { ...round, weeklyEvents: { ...round.weeklyEvents, raidDamage } });
+async function recordActivityRound(activityEconomy: ActivityEconomyService, party: PartyService, user: DiscordUser, round: Parameters<ActivityEconomyService["recordMissionRound"]>[1], logger: AppLogger = console, event = "activity_progress_record_failed", spinId?: string) {
+  try {
+    const game = round.game ?? round.id.split("-", 1)[0];
+    const modifiers = activityEconomy.partyModifiers(user, game);
+    if (round.payout > round.wager) party.recordTrustedWin(user.id, round.payout - round.wager, modifiers.party);
+    const raidDamage = party.recordTrustedRound(user.id, round.wager, round.payout, modifiers);
+    await activityEconomy.recordMissionRound(user, { ...round, weeklyEvents: { ...round.weeklyEvents, raidDamage } });
+  } catch (error) {
+    logger.error(event, {
+      roundId: round.id,
+      ...(spinId ? { spinId } : {}),
+      ...unexpectedErrorLogDetails(annotateErrorStage(error, "recordActivityRound"))
+    });
+  }
 }
 
 function activityHelmetOptions(env: ServerEnv) {

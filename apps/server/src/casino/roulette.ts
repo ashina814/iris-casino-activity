@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
 import { annotateErrorStage, AppError } from "../errors.js";
-import { reserveCasinoBet, settleCasinoReservation } from "../services/casino-economy.js";
+import { getCasinoTransaction, reserveCasinoBet, settleCasinoReservation } from "../services/casino-economy.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 export interface RouletteBet { selection: string; amount: number; }
@@ -17,7 +17,8 @@ export interface RouletteRound {
   number: number | null;
   payout: number | null;
   wallet: number | null;
-  phase: "reserving" | "settling" | "settled";
+  phase: "reserving" | "settling" | "settled" | "reconciliation_failed";
+  reconciliation?: { reason: string; remoteStatus?: string; remotePayout?: number | null };
 }
 
 export interface RouletteRoundStore { load(): RouletteRound[]; save(rounds: RouletteRound[]): void; }
@@ -43,7 +44,12 @@ export class RouletteService {
     this.rounds = new Map(options.store.load().map((round) => [round.spinId, round]));
   }
 
-  async reconcileAll(): Promise<void> { for (const round of this.rounds.values()) if (round.phase !== "settled") await this.resume(round); }
+  async reconcileAll(): Promise<void> {
+    await Promise.all([...this.rounds.values()].filter((round) => round.phase !== "settled" && round.phase !== "reconciliation_failed").map(async (round) => {
+      try { await this.resume(round); }
+      catch (error) { console.error("casino_round_reconcile_failed", { game: "roulette", roundId: round.spinId, phase: round.phase, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: error instanceof Error ? error.message : "unknown reconciliation error" }); }
+    }));
+  }
 
   async spin(user: DiscordUser, spinId: string, bets: RouletteBet[]): Promise<RouletteRound> {
     if (!/^[A-Za-z0-9:_.-]{1,128}$/.test(spinId)) throw new AppError(400, "bad_request", "Roulette spin is invalid.");
@@ -67,6 +73,10 @@ export class RouletteService {
   private async resume(round: RouletteRound): Promise<void> {
     if (round.phase === "reserving") {
       const reservation = await this.reserve(round);
+      if (reservation.transaction.status !== "reserved") {
+        this.quarantine(round, "reservation_not_reserved", reservation.transaction.status, reservation.transaction.payout);
+        return;
+      }
       round.wallet = reservation.wallet;
       round.number ??= this.options.number?.() ?? randomInt(37);
       round.payout = round.bets.reduce((sum, bet) => sum + bet.amount * multiplier(bet.selection, round.number!), 0);
@@ -74,10 +84,15 @@ export class RouletteService {
       this.save("roulette.state.save.before_settle");
     }
     if (round.phase === "settling") {
-      const settlement = await this.settle(round);
-      round.wallet = settlement.wallet;
-      round.phase = "settled";
-      this.save("roulette.state.save.settled");
+      try {
+        const settlement = await this.settle(round);
+        round.wallet = settlement.wallet;
+        round.phase = "settled";
+        this.save("roulette.state.save.settled");
+      } catch (error) {
+        if (!(error instanceof AppError) || (error.code !== "casino_transaction_conflict" && error.code !== "casino_transaction_not_found")) throw error;
+        await this.reconcileSettlement(round);
+      }
     }
   }
 
@@ -95,6 +110,38 @@ export class RouletteService {
     } catch (error) {
       throw annotateErrorStage(error, "roulette.settle");
     }
+  }
+
+  private async reconcileSettlement(round: RouletteRound): Promise<void> {
+    let transaction;
+    try {
+      transaction = await getCasinoTransaction(`roulette-${round.spinId}`, this.options.env, this.options.fetch);
+    } catch (error) {
+      if (error instanceof AppError && error.code === "casino_transaction_not_found") {
+        this.quarantine(round, "remote_not_found");
+        return;
+      }
+      throw error;
+    }
+    if (transaction.transaction.status === "reserved") {
+      const settled = await this.settle(round);
+      round.wallet = settled.wallet;
+      round.phase = "settled";
+      this.save("roulette.state.save.reconciled");
+      return;
+    }
+    if (transaction.transaction.status === "settled" && transaction.transaction.payout === (round.payout ?? 0)) {
+      round.phase = "settled";
+      this.save("roulette.state.save.repaired");
+      return;
+    }
+    this.quarantine(round, transaction.transaction.status === "settled" ? "remote_payout_mismatch" : "remote_cancelled", transaction.transaction.status, transaction.transaction.payout);
+  }
+
+  private quarantine(round: RouletteRound, reason: string, remoteStatus?: string, remotePayout?: number | null): void {
+    round.phase = "reconciliation_failed";
+    round.reconciliation = { reason, remoteStatus, remotePayout };
+    this.save("roulette.state.save.quarantined");
   }
 
   private save(stage: string): void {

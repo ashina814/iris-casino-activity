@@ -78,6 +78,26 @@ export function createApp(options: CreateAppOptions = {}) {
   const activityEconomy = new ActivityEconomyService({ env, fetch: fetchFn, store: new FileActivityProgressStore(env.ACTIVITY_PROGRESS_STATE_PATH) });
   const party = new PartyService({ store: new FilePartyStore(env.PARTY_STATE_PATH) });
   const duels = new DuelService(new FileDuelStore(env.DUEL_STATE_PATH));
+  const activeCasinoGames = {
+    blackjack: { service: blackjack, id: "id", phases: ["reserving", "player", "settling"] },
+    craps: { service: craps, id: "roundId", phases: ["reserving", "active", "settling"] },
+    hilo: { service: hilo, id: "roundId", phases: ["reserving", "active", "settling"] },
+    mines: { service: mines, id: "roundId", phases: ["reserving", "active", "settling"] },
+    scratch: { service: scratch, id: "ticketId", phases: ["reserving", "active", "settling"] },
+    war: { service: war, id: "roundId", phases: ["reserving", "tie", "settling"] },
+    tower: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] },
+    holdem: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] },
+    threecard: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] },
+    ascent: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] },
+    arcana: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] },
+    moonshot: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] }
+  } as const;
+  const assertNoReplacementActiveRound = (game: keyof typeof activeCasinoGames, discordUserId: string, requestedRoundId: string) => {
+    const active = findActiveCasinoRounds(game, activeCasinoGames[game], discordUserId);
+    if (active.some((round) => round.roundId !== requestedRoundId)) {
+      throw new AppError(409, "casino_transaction_conflict", "Resume the existing active round before starting another one.");
+    }
+  };
   const reconciliationTargets = [
     ["roulette", roulette.reconcileAll()], ["slots", slots.reconcileAll()], ["baccarat", baccarat.reconcileAll()], ["poker", poker.reconcileAll()],
     ["sicbo", sicbo.reconcileAll()], ["keno", keno.reconcileAll()], ["dragon", dragon.reconcileAll()], ["wheel", wheel.reconcileAll()],
@@ -158,6 +178,22 @@ export function createApp(options: CreateAppOptions = {}) {
       version: "0.1.0"
     });
   });
+
+  app.get("/api/casino/active-rounds", asyncRoute(async (req, res) => {
+    const user = getSession(req).user;
+    if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+    res.json({ ok: true, userId: user.id, rounds: Object.entries(activeCasinoGames).flatMap(([game, entry]) => findActiveCasinoRounds(game, entry, user.id)) });
+  }));
+
+  app.get("/api/games/:game/active-round", asyncRoute(async (req, res) => {
+    const user = getSession(req).user;
+    const game = req.params.game as keyof typeof activeCasinoGames;
+    if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
+    const entry = activeCasinoGames[game];
+    if (!entry) throw new AppError(404, "not_found", "Game was not found.");
+    const [round] = findActiveCasinoRounds(game, entry, user.id);
+    res.json({ ok: true, round: round ?? null });
+  }));
 
   app.get("/api/config", (_req, res) => {
     res.json({
@@ -428,6 +464,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Blackjack bet is invalid.");
 
+      assertNoReplacementActiveRound("blackjack", user.id, parsed.data.roundId);
       const round = await blackjack.start(user, parsed.data.roundId, parsed.data.bet);
       await recordBlackjackMission(activityEconomy, party, user, round);
       res.status(201).json({ ok: true, round: blackjack.publicState(round) });
@@ -465,7 +502,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post(
     "/api/games/scratch/tickets",
-    asyncRoute(async (req, res) => { const user=getSession(req).user;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");const p=z.object({ticketId:z.string().min(1).max(128),bet:z.number().int().positive().safe()}).safeParse(req.body);if(!p.success)throw new AppError(400,"bad_request","Scratch ticket invalid.");res.status(201).json({ok:true,ticket:await scratch.issue(user,p.data.ticketId,p.data.bet)}); })
+    asyncRoute(async (req, res) => { const user=getSession(req).user;if(!user)throw new AppError(401,"unauthorized","Authentication is required.");const p=z.object({ticketId:z.string().min(1).max(128),bet:z.number().int().positive().safe()}).safeParse(req.body);if(!p.success)throw new AppError(400,"bad_request","Scratch ticket invalid.");assertNoReplacementActiveRound("scratch",user.id,p.data.ticketId);res.status(201).json({ok:true,ticket:await scratch.issue(user,p.data.ticketId,p.data.bet)}); })
   );
   app.post(
     "/api/games/scratch/tickets/:ticketId/reveal",
@@ -494,7 +531,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "War round is invalid.");
-      const round = await war.deal(user, parsed.data.roundId, parsed.data.bet); await recordMissionIfSettled(activityEconomy,party,user,"war",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
+      assertNoReplacementActiveRound("war", user.id, parsed.data.roundId); const round = await war.deal(user, parsed.data.roundId, parsed.data.bet); await recordMissionIfSettled(activityEconomy,party,user,"war",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
     })
   );
 
@@ -516,7 +553,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe(), mineCount: z.number().int() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Mines round is invalid.");
-      const round = await mines.start(user, parsed.data.roundId, parsed.data.bet, parsed.data.mineCount); await recordMissionIfSettled(activityEconomy,party,user,"mines",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
+      assertNoReplacementActiveRound("mines", user.id, parsed.data.roundId); const round = await mines.start(user, parsed.data.roundId, parsed.data.bet, parsed.data.mineCount); await recordMissionIfSettled(activityEconomy,party,user,"mines",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
     })
   );
 
@@ -549,7 +586,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Hi-Lo round is invalid.");
-      const round = await hilo.start(user, parsed.data.roundId, parsed.data.bet);
+      assertNoReplacementActiveRound("hilo", user.id, parsed.data.roundId); const round = await hilo.start(user, parsed.data.roundId, parsed.data.bet);
       await recordMissionIfSettled(activityEconomy,party,user,"hilo",round.roundId,round.bet,round.payout,round.phase); res.status(201).json({ ok: true, round });
     })
   );
@@ -597,7 +634,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
       const parsed = z.object({ roundId: z.string().min(1).max(128), selection: z.enum(["pass", "dont", "field", "any7", "exact6", "exact8"]), bet: z.number().int().positive().safe() }).safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "bad_request", "Craps round is invalid.");
-      const round = await craps.start(user, parsed.data.roundId, parsed.data.selection, parsed.data.bet);
+      assertNoReplacementActiveRound("craps", user.id, parsed.data.roundId); const round = await craps.start(user, parsed.data.roundId, parsed.data.selection, parsed.data.bet);
       await recordMissionIfSettled(activityEconomy,party,user,"craps",round.roundId,round.bet,round.payout,round.phase);
       res.json({ ok: true, round });
     })
@@ -764,7 +801,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const parsed = z.object({ roundId: z.string().min(1).max(128), bet: z.number().int().positive().safe(), pairPlus: z.boolean().optional(), selection: z.number().int().optional(), auto: z.number().finite().optional() }).safeParse(req.body);
       const game = req.params.game;
       if (!parsed.success || !game || !["holdem", "tower", "threecard", "derby", "ascent", "arcana", "moonshot"].includes(game)) throw new AppError(400, "bad_request", "Game round is invalid.");
-      const round = await legacyGames.start(user, game as "holdem" | "tower" | "threecard" | "derby" | "ascent" | "arcana" | "moonshot", parsed.data.roundId, parsed.data.bet, parsed.data);
+      if (game !== "derby") assertNoReplacementActiveRound(game as keyof typeof activeCasinoGames, user.id, parsed.data.roundId); const round = await legacyGames.start(user, game as "holdem" | "tower" | "threecard" | "derby" | "ascent" | "arcana" | "moonshot", parsed.data.roundId, parsed.data.bet, parsed.data);
       await recordMissionIfSettled(activityEconomy,party,user,game,round.id,round.bet,round.payout,round.phase,round.sovereign);
       res.status(201).json({ ok: true, round });
     })
@@ -811,6 +848,35 @@ export function createApp(options: CreateAppOptions = {}) {
 
 function getSession(req: Request): IrisSession {
   return req.session as IrisSession;
+}
+
+type ActiveCasinoEntry = { service: unknown; id: string; phases: readonly string[] };
+
+function findActiveCasinoRounds(game: string, entry: ActiveCasinoEntry, discordUserId: string) {
+  const rounds = (entry.service as { rounds?: Map<string, Record<string, unknown>> }).rounds;
+  if (!rounds) return [];
+  return [...rounds.values()]
+    .filter((round) => round.discordUserId === discordUserId && entry.phases.includes(String(round.phase)) && (game === "tower" || game === "holdem" || game === "threecard" || game === "ascent" || game === "arcana" || game === "moonshot" ? round.game === game : true))
+    .map((round) => ({ game, roundId: String(round[entry.id]), phase: String(round.phase), wallet: typeof round.wallet === "number" ? round.wallet : null, state: publicActiveState(game, round) }));
+}
+
+function publicActiveState(game: string, round: Record<string, unknown>): Record<string, unknown> {
+  const copy = <T extends string>(keys: readonly T[]) => Object.fromEntries(keys.flatMap((key) => round[key] === undefined ? [] : [[key, round[key]]])) as Record<string, unknown>;
+  if (game === "blackjack") {
+    const dealer = Array.isArray(round.dealer) ? round.dealer.map((card, index) => String(round.phase) === "settling" || index === 0 ? card : null) : [];
+    return { ...copy(["hands", "activeHand", "pendingStake", "wallet"]), dealer };
+  }
+  if (game === "craps") return copy(["selection", "bet", "point", "dice", "payout", "message", "lastRollId"]);
+  if (game === "hilo") return copy(["bet", "current", "multiplier", "correct", "history", "payout", "lastActionId", "lastAction"]);
+  if (game === "mines") return copy(["bet", "mineCount", "revealed", "multiplier", "hit", "payout", "lastActionId", "lastAction"]);
+  if (game === "scratch") return copy(["bet", "revealed", "payout", "lastActionId", "lastIndex"]);
+  if (game === "war") return copy(["bet", "player", "dealer", "warPlayer", "warDealer", "payout", "label", "wentToWar", "lastActionId", "lastAction", "pendingAdditionalWager"]);
+  const state = { ...(round.state as Record<string, unknown> | undefined) };
+  delete state.deck;
+  if (game === "tower") state.traps = [];
+  if (game === "ascent") delete state.crashPoint;
+  if (game === "holdem" || game === "threecard") delete state.dealer;
+  return { bet: round.bet, payout: round.payout, lastActionId: round.lastActionId, pendingAdditionalWager: round.pendingAdditionalWager, state };
 }
 
 function sessionSecret(env: ServerEnv): string {

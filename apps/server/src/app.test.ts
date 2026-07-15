@@ -87,6 +87,24 @@ describe("server API", () => {
     expect(res.body.error.code).toBe("unauthorized");
   });
 
+  it("lists an authenticated player's active round without exposing its hidden layout or allowing a replacement bet", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "iris-active-round-"));
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true, wallet: 12400, currency: "Ris", transaction: { transactionId: "mines-resume-mines", sessionId: "mines-resume-mines", game: "mines", bet: 100, status: "reserved", payout: null } }, 201));
+    try {
+      const app = createApp({ env: { ...baseEnv, MINES_STATE_PATH: join(dir, "mines.json") }, fetch: fetchMock, logger: silentLogger });
+      await app.locals.reconciliation;
+      const agent = request.agent(app);
+      await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+      await agent.post("/api/games/mines/rounds").send({ roundId: "resume-mines", bet: 100, mineCount: 3 }).expect(201);
+      const active = await agent.get("/api/games/mines/active-round").expect(200);
+      expect(active.body.round).toMatchObject({ game: "mines", roundId: "resume-mines", phase: "active" });
+      expect(active.body.round.state).not.toHaveProperty("mines");
+      await agent.post("/api/games/mines/rounds").send({ roundId: "replacement-mines", bet: 100, mineCount: 3 }).expect(409);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("returns the current user after mock authentication", async () => {
     const agent = await authenticatedAgent();
     const res = await agent.get("/api/me").expect(200);

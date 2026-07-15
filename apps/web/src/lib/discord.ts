@@ -17,6 +17,10 @@ interface ActivityConfig {
   mockAuth: boolean;
 }
 
+function isMobileClient() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
 export async function getDiscordAuthorizationCode(): Promise<string> {
   const config = await getActivityConfig();
   const clientId = config.discordClientId || import.meta.env.VITE_DISCORD_CLIENT_ID;
@@ -34,13 +38,19 @@ export async function getDiscordAuthorizationCode(): Promise<string> {
   const sdk = new DiscordSDK(clientId);
   await sdk.ready();
 
-  // Lux Noctis is a desktop-first table experience. Request a wide Activity surface
-  // before authentication so Discord does not retain the compact portrait frame.
-  await sdk.commands.setOrientationLockState({
-    lock_state: Common.OrientationLockStateTypeObject.LANDSCAPE,
-    picture_in_picture_lock_state: Common.OrientationLockStateTypeObject.LANDSCAPE,
-    grid_lock_state: Common.OrientationLockStateTypeObject.LANDSCAPE
-  });
+  // Lux Noctis is desktop-first, but mobile must keep Discord's native orientation.
+  // Layout requests are optional on older clients and must never block authentication.
+  if (!isMobileClient()) {
+    try {
+      await sdk.commands.setOrientationLockState({
+        lock_state: Common.OrientationLockStateTypeObject.LANDSCAPE,
+        picture_in_picture_lock_state: Common.OrientationLockStateTypeObject.LANDSCAPE,
+        grid_lock_state: Common.OrientationLockStateTypeObject.LANDSCAPE
+      });
+    } catch {
+      // Continue with Discord's default Activity layout when this RPC is unavailable.
+    }
+  }
 
   const commands = sdk.commands as unknown as AuthorizeCommand;
   const result = await commands.authorize({

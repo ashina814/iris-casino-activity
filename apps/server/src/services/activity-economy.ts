@@ -148,6 +148,8 @@ type TreasuryItemId = "stardust" | "capsule" | "key" | "seal";
 type TreasuryPay = "coins" | "notes";
 
 const treasuryItemIds = ["stardust", "capsule", "key", "seal"] as const satisfies readonly TreasuryItemId[];
+const treasuryReserveCap = 10_000;
+const treasuryRecycleRate = 0.25;
 const missionPool: Omit<MissionProgress, "progress" | "claimed">[] = [
   { id: "rounds", event: "round", target: 5, reward: 600 }, { id: "wins", event: "win", target: 3, reward: 900 }, { id: "wager", event: "wager", target: 10000, reward: 750 },
   { id: "blackjack", event: "blackjack", target: 1, reward: 1200 }, { id: "roulette", event: "rouletteStraight", target: 1, reward: 1400 }, { id: "free", event: "freeSpins", target: 1, reward: 1200 },
@@ -952,6 +954,7 @@ export class ActivityEconomyService {
     const item = treasuryCatalog(progress.seals).find((entry) => entry.id === itemId);
     if (!item) throw new AppError(400, "bad_request", "Treasury item is invalid.");
     let nextWallet = wallet.wallet;
+    const recycled = pay === "coins" ? Math.floor(item.coins * treasuryRecycleRate) : 0;
     if (pay === "notes") {
       if (progress.notes < item.notes) throw new AppError(409, "insufficient_funds", "Insufficient Crown Notes.");
     } else {
@@ -968,6 +971,7 @@ export class ActivityEconomyService {
 
     const next: ActivityProgress = {
       ...progress,
+      reserve: Math.min(treasuryReserveCap, progress.reserve + recycled),
       notes: pay === "notes" ? progress.notes - item.notes : progress.notes,
       seals: itemId === "seal" ? progress.seals + 1 : progress.seals,
       collectionCapsules: itemId === "capsule" ? progress.collectionCapsules + 1 : progress.collectionCapsules,
@@ -1478,6 +1482,8 @@ export class ActivityEconomyService {
       wallet,
       currency,
       reserve: progress.reserve,
+      reserveCap: treasuryReserveCap,
+      recycleRate: treasuryRecycleRate,
       notes: progress.notes,
       seals: progress.seals,
       purchases: progress.purchases

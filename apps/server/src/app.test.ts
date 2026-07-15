@@ -380,6 +380,7 @@ describe("server API", () => {
       pay: "coins",
       wallet: 32000,
       notes: 0,
+      reserve: 5000,
       purchases: { stardust: 1 }
     });
     expect(fetchMock).toHaveBeenNthCalledWith(

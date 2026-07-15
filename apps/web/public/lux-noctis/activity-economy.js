@@ -9,6 +9,7 @@
   let busy = false;
   let reliefBusy = false;
   let treasuryBusy = false;
+  let treasuryState = null;
   let missionRefresh = 0;
   let vaultBusy = false;
   let vaultRefresh = 0;
@@ -48,6 +49,7 @@
 
   function applyTreasuryState(treasury) {
     if (!treasury || typeof treasury !== "object") return;
+    treasuryState = treasury;
     const economy = app.profile.data.economy;
     if (economy) {
       if (Number.isInteger(treasury.reserve) && treasury.reserve >= 0) economy.reserve = treasury.reserve;
@@ -72,6 +74,50 @@
     const payload = await response.json();
     if (!payload?.ok || !payload.treasury) throw new Error("invalid treasury response");
     return payload.treasury;
+  }
+
+  function formatRis(value) {
+    return `${Number(value || 0).toLocaleString("ja-JP")} Ris`;
+  }
+
+  function renderActivityTreasury(tab) {
+    const mount = document.querySelector("#treasuryContent");
+    if (!mount || !app.economy) return;
+    app.economy.tab = tab;
+    document.querySelectorAll("[data-treasury-tab]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.treasuryTab === tab);
+    });
+    if (!treasuryState) {
+      mount.innerHTML = '<div class="treasury-empty">IRIS財務台帳を同期しています。</div>';
+      return;
+    }
+
+    const treasury = treasuryState;
+    if (tab === "overview") {
+      mount.innerHTML = `<div class="treasury-status status-stable"><span>R</span><div><small>IRIS ECONOMY</small><h3>RIS 財務台帳</h3><p>残高・報酬枠・収集通貨はすべてサーバー側で管理されています。</p></div><strong>${formatRis(treasury.wallet)}</strong></div><div class="treasury-metrics"><article><small>RIS 残高</small><b>${formatRis(treasury.wallet)}</b><span>IRIS Economy Bot と同期</span></article><article><small>報酬準備枠</small><b>${formatRis(treasury.reserve)}</b><span>上限 ${formatRis(treasury.reserveCap)}</span></article><article><small>CROWN NOTES</small><b>${Number(treasury.notes || 0).toLocaleString("ja-JP")}</b><span>RISへ換金できない収集通貨</span></article></div><div class="treasury-policy-grid"><section><p class="eyebrow">ONE WALLET</p><h3>通貨は RIS のみ</h3><ul><li><b>卓のベット・配当</b><span>IRIS Economy Bot がRISを直接増減します。</span></li><li><b>固定報酬</b><span>デイリー・依頼・イベントは、サーバー上の報酬準備枠からRISとして支給します。</span></li><li><b>CROWN NOTES</b><span>収集用の非換金通貨です。RIS残高でも第二の現金残高でもありません。</span></li></ul></section><section><p class="eyebrow">TREASURY EXCHANGE</p><h3>交換時の循環</h3><div class="treasury-audit-list"><span><b>RISで交換</b><i>${Math.round((treasury.recycleRate || 0) * 100)}%を報酬枠へ再循環</i><em>残りは経済から消費されます。</em></span><span><b>CROWN NOTESで交換</b><i>収集品と直接交換</i><em>RIS残高は減りません。</em></span></div></section></div>`;
+      return;
+    }
+
+    if (tab === "exchange") {
+      const items = app.economy.catalog();
+      mount.innerHTML = `<div class="treasury-wallet-row"><span><small>RIS WALLET</small><b>${formatRis(treasury.wallet)}</b></span><span><small>CROWN NOTES</small><b>${Number(treasury.notes || 0).toLocaleString("ja-JP")}</b></span><span><small>REWARD RESERVE</small><b>${formatRis(treasury.reserve)}</b></span></div><div class="treasury-exchange-intro"><div><p class="eyebrow">IRIS SETTLEMENT</p><h3>王庫交換所</h3><p>RISでの交換はIRIS Economy Botで即時決済されます。${Math.round((treasury.recycleRate || 0) * 100)}%だけが次の固定報酬枠へ再循環し、CROWN NOTESでも同じ収集品を交換できます。</p></div><b>NO CASHOUT<br /><small>RISの購入・換金なし</small></b></div><div class="treasury-shop">${items.map((item) => `<article><i>${item.icon}</i><div><small>${item.name}</small><h4>${item.reward}</h4><p>${item.desc}</p></div><button data-treasury-buy="${item.id}" data-pay="coins" type="button" ${treasury.wallet < item.coins ? "disabled" : ""}><b>${formatRis(item.coins)}</b><small>RIS</small></button><button data-treasury-buy="${item.id}" data-pay="notes" type="button" ${treasury.notes < item.notes ? "disabled" : ""}><b>${Number(item.notes).toLocaleString("ja-JP")}</b><small>CROWN NOTES</small></button></article>`).join("")}</div>`;
+      mount.querySelectorAll("[data-treasury-buy]").forEach((button) => {
+        button.addEventListener("click", () => app.economy.confirmBuy(button.dataset.treasuryBuy, button.dataset.pay));
+      });
+      return;
+    }
+
+    mount.innerHTML = `<div class="treasury-ledger-head"><div><p class="eyebrow">IRIS SETTLEMENT</p><h3>サーバー管理の財務局</h3></div><span>端末内のL台帳は使用しません。</span></div><div class="treasury-status status-stable"><span>R</span><div><small>LIVE WALLET</small><h3>${formatRis(treasury.wallet)}</h3><p>RISの詳細履歴はIRIS Economy Botの台帳を正とします。</p></div><strong>${Number(treasury.notes || 0).toLocaleString("ja-JP")}</strong></div><div class="treasury-ledger-summary"><span><small>REWARD RESERVE</small><b>${formatRis(treasury.reserve)}</b></span><span><small>RESERVE CAP</small><b>${formatRis(treasury.reserveCap)}</b></span><span><small>CROWN NOTES</small><b>${Number(treasury.notes || 0).toLocaleString("ja-JP")}</b></span><span><small>RIS RECYCLE</small><b>${Math.round((treasury.recycleRate || 0) * 100)}%</b></span></div>`;
+  }
+
+  async function refreshTreasury() {
+    try {
+      const treasury = await requestTreasury("/api/economy/treasury", "GET");
+      applyTreasuryState(treasury);
+      if (app.activeModal?.id === "treasuryModal") renderActivityTreasury(app.economy?.tab || "overview");
+    } catch {
+      // Keep the last server-owned treasury state visible while a retry occurs later.
+    }
   }
 
   async function requestRelief() {
@@ -683,6 +729,23 @@
   };
 
   if (app.economy) {
+    app.economy.rewardReserveLabel = function () {
+      return treasuryState ? formatRis(treasuryState.reserve) : "-- Ris";
+    };
+    app.economy.render = function (tab) {
+      renderActivityTreasury(tab || this.tab || "overview");
+    };
+    app.economy.updateAll = function () {
+      const reserve = this.rewardReserveLabel();
+      const top = document.querySelector("#treasuryTopReserve");
+      if (top) top.textContent = reserve;
+      const ribbonReserve = document.querySelector("#treasuryRibbonReserve");
+      if (ribbonReserve) ribbonReserve.textContent = reserve;
+      const ribbonNotes = document.querySelector("#treasuryRibbonNotes");
+      if (ribbonNotes) ribbonNotes.textContent = Number(treasuryState?.notes || 0).toLocaleString("ja-JP");
+      this.applySealVisual();
+      if (app.activeModal?.id === "treasuryModal") this.render(this.tab);
+    };
     app.economy.buy = async function (id, pay) {
       if (treasuryBusy) return;
       treasuryBusy = true;
@@ -700,7 +763,6 @@
         if (id === "stardust" && this.app.ascension) this.app.ascension.data.stardust += 250;
         if (id === "capsule" && this.app.ascension) this.app.ascension.data.capsules += 1;
         if (id === "key" && this.app.eternal) this.app.eternal.data.keys += 1;
-        this.addLedger(pay === "notes" ? "notes" : "sink", pay === "notes" ? 0 : 1, `${id.toUpperCase()} / ${pay.toUpperCase()}`, "out");
         this.app.ascension?.updateAll?.();
         this.app.eternal?.updateAll?.();
         this.app.audio.play("chime");
@@ -719,6 +781,7 @@
   request("/api/economy/daily", "GET")
     .then(applyDailyState)
     .catch(() => {});
+  void refreshTreasury();
   if (app.ascension) app.ascension.claimWeekly = async function (id) {
     const item = this.data.weekly.items.find((entry) => entry.id === id);
     if (!item || item.claimed || !item.complete) return;

@@ -1,5 +1,7 @@
 import { randomInt } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { sicBoRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -19,10 +21,10 @@ export interface SicBoRoundStore { load(): SicBoRound[]; save(rounds: SicBoRound
 export class FileSicBoRoundStore implements SicBoRoundStore {
   constructor(private readonly filePath: string) {}
   load(): SicBoRound[] {
-    try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8")); if (!Array.isArray(value)) throw new Error("Sic Bo state is invalid."); return value as SicBoRound[]; }
+    try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8", sicBoRounds)); if (!Array.isArray(value)) throw new Error("Sic Bo state is invalid."); return value as SicBoRound[]; }
     catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; }
   }
-  save(rounds: SicBoRound[]): void { mkdirSync(dirname(this.filePath), { recursive: true }); writeFileSync(this.filePath, JSON.stringify(rounds), "utf8"); }
+  save(rounds: SicBoRound[]): void { mkdirSync(dirname(this.filePath), { recursive: true }); writeFileSync(this.filePath, JSON.stringify(rounds), "utf8", sicBoRounds); }
 }
 
 export class SicBoService {

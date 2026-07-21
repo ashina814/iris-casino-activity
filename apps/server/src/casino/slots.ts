@@ -1,5 +1,7 @@
 import { randomInt } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { slotsState } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -69,7 +71,7 @@ export class FileSlotsRoundStore implements SlotsRoundStore {
 
   load(): SlotsState {
     try {
-      const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
+      const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8", slotsState));
       if (!value || typeof value !== "object" || !Array.isArray((value as SlotsState).rounds) || !Array.isArray((value as SlotsState).players)) {
         throw new Error("Slots state is invalid.");
       }
@@ -82,7 +84,7 @@ export class FileSlotsRoundStore implements SlotsRoundStore {
 
   save(state: SlotsState): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(state), "utf8");
+    writeFileSync(this.filePath, JSON.stringify(state), "utf8", slotsState);
   }
 }
 

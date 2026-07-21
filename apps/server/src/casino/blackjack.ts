@@ -1,5 +1,7 @@
 import { randomInt } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { blackjackRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -67,7 +69,7 @@ export class FileBlackjackRoundStore implements BlackjackRoundStore {
 
   load(): BlackjackRound[] {
     try {
-      const payload: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
+      const payload: unknown = JSON.parse(readFileSync(this.filePath, "utf8", blackjackRounds));
       if (!Array.isArray(payload)) throw new Error("Blackjack state is not an array.");
       return payload as BlackjackRound[];
     } catch (error) {
@@ -78,7 +80,7 @@ export class FileBlackjackRoundStore implements BlackjackRoundStore {
 
   save(rounds: BlackjackRound[]): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(rounds), "utf8");
+    writeFileSync(this.filePath, JSON.stringify(rounds), "utf8", blackjackRounds);
   }
 }
 

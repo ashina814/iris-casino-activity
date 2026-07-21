@@ -1,5 +1,7 @@
 import { randomInt } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { kenoRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -14,10 +16,10 @@ export interface KenoRoundStore { load(): KenoRound[]; save(rounds: KenoRound[])
 export class FileKenoRoundStore implements KenoRoundStore {
   constructor(private readonly filePath: string) {}
   load(): KenoRound[] {
-    try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8")); if (!Array.isArray(value)) throw new Error("Keno state is invalid."); return value as KenoRound[]; }
+    try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8", kenoRounds)); if (!Array.isArray(value)) throw new Error("Keno state is invalid."); return value as KenoRound[]; }
     catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; }
   }
-  save(rounds: KenoRound[]): void { mkdirSync(dirname(this.filePath), { recursive: true }); writeFileSync(this.filePath, JSON.stringify(rounds), "utf8"); }
+  save(rounds: KenoRound[]): void { mkdirSync(dirname(this.filePath), { recursive: true }); writeFileSync(this.filePath, JSON.stringify(rounds), "utf8", kenoRounds); }
 }
 
 export class KenoService {

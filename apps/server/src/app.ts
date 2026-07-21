@@ -4,6 +4,9 @@ import cookieSession from "cookie-session";
 import cors from "cors";
 import express, { type ErrorRequestHandler, type Request, type Response as ExpressResponse } from "express";
 import helmet from "helmet";
+import { randomUUID } from "node:crypto";
+import { closeSync, mkdirSync, openSync, unlinkSync, writeSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import { exchangeDiscordCode, mockDiscordUser } from "./auth/discord.js";
 import { BlackjackService, FileBlackjackRoundStore, type BlackjackAction } from "./casino/blackjack.js";
@@ -32,6 +35,12 @@ import { FilePartyStore, PartyService } from "./services/party.js";
 import { DuelService, FileDuelStore } from "./services/duels.js";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
+const economyHealthSchema = z.object({
+  ok: z.literal(true),
+  service: z.literal("iris-economy-bot"),
+  currency: z.literal("Ris"),
+  guildId: z.string().min(1)
+});
 
 export interface AppLogger {
   error(message: string, meta?: Record<string, unknown>): void;
@@ -47,6 +56,18 @@ export interface CreateAppOptions {
 type IrisSession = CookieSessionInterfaces.CookieSessionObject & {
   user?: DiscordUser;
 };
+
+type ReconciliationFailure = { game: string; roundId?: string; errorName: string; errorCode?: string };
+type ReconciliationStatus = { complete: boolean; failures: ReconciliationFailure[] };
+type ReconciliationTarget = { game: string; service: unknown };
+type ReconciliationService = { reconcileAll(): Promise<void>; resume?: (round: Record<string, unknown>) => Promise<void>; rounds?: Map<string, Record<string, unknown>> };
+
+class ReconciliationQuarantinedError extends Error {
+  constructor(readonly code: string) {
+    super("Casino round requires support.");
+    this.name = "ReconciliationQuarantinedError";
+  }
+}
 
 export function createApp(options: CreateAppOptions = {}) {
   const env = loadEnv(options.env);
@@ -80,10 +101,20 @@ export function createApp(options: CreateAppOptions = {}) {
   const duels = new DuelService(new FileDuelStore(env.DUEL_STATE_PATH));
   const activeCasinoGames = {
     blackjack: { service: blackjack, id: "id", phases: ["reserving", "player", "settling"] },
+    roulette: { service: roulette, id: "spinId", phases: ["reserving", "settling", "reconciliation_failed"] },
+    slots: { service: slots, id: "spinId", phases: ["reserving", "settling", "reconciliation_failed"] },
+    baccarat: { service: baccarat, id: "roundId", phases: ["reserving", "settling", "reconciliation_failed"] },
+    poker: { service: poker, id: "roundId", phases: ["reserving", "settling", "reconciliation_failed"] },
+    sicbo: { service: sicbo, id: "spinId", phases: ["reserving", "settling", "reconciliation_failed"] },
+    keno: { service: keno, id: "drawId", phases: ["reserving", "settling", "reconciliation_failed"] },
+    dragon: { service: dragon, id: "roundId", phases: ["reserving", "settling", "reconciliation_failed"] },
+    wheel: { service: wheel, id: "spinId", phases: ["reserving", "settling", "reconciliation_failed"] },
     craps: { service: craps, id: "roundId", phases: ["reserving", "active", "settling"] },
+    plinko: { service: plinko, id: "dropId", phases: ["reserving", "settling", "reconciliation_failed"] },
     hilo: { service: hilo, id: "roundId", phases: ["reserving", "active", "settling"] },
     mines: { service: mines, id: "roundId", phases: ["reserving", "active", "settling"] },
     scratch: { service: scratch, id: "ticketId", phases: ["reserving", "active", "settling"] },
+    bingo: { service: bingo, id: "drawId", phases: ["reserving", "settling", "reconciliation_failed"] },
     war: { service: war, id: "roundId", phases: ["reserving", "tie", "settling"] },
     tower: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] },
     holdem: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] },
@@ -92,29 +123,45 @@ export function createApp(options: CreateAppOptions = {}) {
     arcana: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] },
     moonshot: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] }
   } as const;
+  const casinoStartGames: Record<string, { service: unknown; id: string; legacyGame?: string }> = {
+    blackjack: { service: blackjack, id: "roundId" }, roulette: { service: roulette, id: "spinId" }, slots: { service: slots, id: "spinId" }, baccarat: { service: baccarat, id: "roundId" }, poker: { service: poker, id: "roundId" }, sicbo: { service: sicbo, id: "spinId" }, keno: { service: keno, id: "drawId" }, dragon: { service: dragon, id: "roundId" }, wheel: { service: wheel, id: "spinId" }, craps: { service: craps, id: "roundId" }, plinko: { service: plinko, id: "dropId" }, hilo: { service: hilo, id: "roundId" }, mines: { service: mines, id: "roundId" }, war: { service: war, id: "roundId" }, bingo: { service: bingo, id: "drawId" }, scratch: { service: scratch, id: "ticketId" },
+    holdem: { service: legacyGames, id: "roundId", legacyGame: "holdem" }, tower: { service: legacyGames, id: "roundId", legacyGame: "tower" }, threecard: { service: legacyGames, id: "roundId", legacyGame: "threecard" }, derby: { service: legacyGames, id: "roundId", legacyGame: "derby" }, ascent: { service: legacyGames, id: "roundId", legacyGame: "ascent" }, arcana: { service: legacyGames, id: "roundId", legacyGame: "arcana" }, moonshot: { service: legacyGames, id: "roundId", legacyGame: "moonshot" }
+  };
+  const isExistingCasinoReplay = (game: string, discordUserId: string, body: unknown) => {
+    const entry = casinoStartGames[game];
+    const requestId = requestedRoundId(body, entry?.id);
+    const rounds = (entry?.service as { rounds?: Map<string, Record<string, unknown>> } | undefined)?.rounds;
+    const existing = requestId ? rounds?.get(requestId) : undefined;
+    return Boolean(existing && existing.discordUserId === discordUserId && (!entry?.legacyGame || existing.game === entry.legacyGame));
+  };
   const assertNoReplacementActiveRound = (game: keyof typeof activeCasinoGames, discordUserId: string, requestedRoundId: string) => {
-    const active = findActiveCasinoRounds(game, activeCasinoGames[game], discordUserId);
+    const active = findActiveCasinoRounds(game, activeCasinoGames[game], discordUserId, reconciliationStatus.failures);
     if (active.some((round) => round.roundId !== requestedRoundId)) {
       throw new AppError(409, "casino_transaction_conflict", "Resume the existing active round before starting another one.");
     }
   };
-  const reconciliationTargets = [
-    ["roulette", roulette.reconcileAll()], ["slots", slots.reconcileAll()], ["baccarat", baccarat.reconcileAll()], ["poker", poker.reconcileAll()],
-    ["sicbo", sicbo.reconcileAll()], ["keno", keno.reconcileAll()], ["dragon", dragon.reconcileAll()], ["wheel", wheel.reconcileAll()],
-    ["craps", craps.reconcileAll()], ["plinko", plinko.reconcileAll()], ["hilo", hilo.reconcileAll()], ["mines", mines.reconcileAll()],
-    ["war", war.reconcileAll()], ["bingo", bingo.reconcileAll()], ["scratch", scratch.reconcileAll()], ["legacy", legacyGames.reconcileAll()]
-  ] as const;
-  const reconciliation = Promise.allSettled(reconciliationTargets.map(([, task]) => task)).then((results) => {
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        const error = result.reason;
+  const reconciliationTargets: ReconciliationTarget[] = [
+    { game: "roulette", service: roulette }, { game: "slots", service: slots }, { game: "baccarat", service: baccarat }, { game: "poker", service: poker },
+    { game: "sicbo", service: sicbo }, { game: "keno", service: keno }, { game: "dragon", service: dragon }, { game: "wheel", service: wheel },
+    { game: "craps", service: craps }, { game: "plinko", service: plinko }, { game: "hilo", service: hilo }, { game: "mines", service: mines },
+    { game: "war", service: war }, { game: "bingo", service: bingo }, { game: "scratch", service: scratch }, { game: "legacy", service: legacyGames }
+  ];
+  const reconciliationStatus: ReconciliationStatus = { complete: false, failures: [] };
+  for (const target of reconciliationTargets) {
+    for (const failure of persistedReconciliationFailures(target)) addReconciliationFailure(reconciliationStatus, failure);
+  }
+  const reconciliation = Promise.all(reconciliationTargets.map(reconcileTarget)).then((results) => {
+    for (const failure of results.flat()) {
+      if (addReconciliationFailure(reconciliationStatus, failure)) {
         logger.error("casino_reconcile_failed", {
-          game: reconciliationTargets[index]![0],
-          errorName: error instanceof Error ? error.name : "NonErrorThrown",
-          errorMessage: error instanceof Error ? error.message : "unknown reconciliation error"
+          game: failure.game,
+          roundId: failure.roundId,
+          errorName: failure.errorName,
+          errorCode: failure.errorCode
         });
       }
-    });
+    }
+    reconciliationStatus.complete = true;
   });
   app.locals.reconciliation = reconciliation;
 
@@ -169,6 +216,21 @@ export function createApp(options: CreateAppOptions = {}) {
       maxAge: 1000 * 60 * 60 * 8
     })
   );
+  app.use("/api/economy", (req, _res, next) => {
+    if (req.method !== "POST" || !req.path.endsWith("/migrate")) return next();
+    const user = getSession(req).user;
+    if (!user) return next();
+    assertLegacyMigrationAccess(env, user.id);
+    next();
+  });
+  app.use("/api/games", (req, _res, next) => {
+    if (req.method !== "POST" || !isCasinoStartPath(req.path)) return next();
+    const game = req.path.split("/")[1] ?? "";
+    const user = getSession(req).user;
+    if (user && isExistingCasinoReplay(game, user.id, req.body)) return next();
+    assertCasinoStartAllowed(env, game, req.body, reconciliationStatus);
+    next();
+  });
   app.use("/api/games", createRateLimit({ max: 300, windowMs: 60_000, key: requestPlayer }));
 
   app.get("/api/health", (_req, res) => {
@@ -179,10 +241,31 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
+  app.get("/api/ready", asyncRoute(async (_req, res) => {
+    const storageWritable = storagePathsWritable(env);
+    const economyReachable = await checkEconomyReachable(env, fetchFn);
+    const disabledGames = casinoDisabledGames(env);
+    const acceptingNewBets = reconciliationStatus.complete
+      && reconciliationStatus.failures.length === 0
+      && economyReachable
+      && storageWritable
+      && env.CASINO_NEW_BETS_ENABLED;
+    const payload = {
+      ok: acceptingNewBets,
+      reconciliationComplete: reconciliationStatus.complete,
+      reconciliationFailures: reconciliationStatus.failures.length,
+      economyReachable,
+      storageWritable,
+      acceptingNewBets,
+      disabledGames
+    };
+    res.status(payload.ok ? 200 : 503).json(payload);
+  }));
+
   app.get("/api/casino/active-rounds", asyncRoute(async (req, res) => {
     const user = getSession(req).user;
     if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
-    res.json({ ok: true, userId: user.id, rounds: Object.entries(activeCasinoGames).flatMap(([game, entry]) => findActiveCasinoRounds(game, entry, user.id)) });
+    res.json({ ok: true, userId: user.id, rounds: Object.entries(activeCasinoGames).flatMap(([game, entry]) => findActiveCasinoRounds(game, entry, user.id, reconciliationStatus.failures)) });
   }));
 
   app.get("/api/games/:game/active-round", asyncRoute(async (req, res) => {
@@ -191,7 +274,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
     const entry = activeCasinoGames[game];
     if (!entry) throw new AppError(404, "not_found", "Game was not found.");
-    const [round] = findActiveCasinoRounds(game, entry, user.id);
+    const [round] = findActiveCasinoRounds(game, entry, user.id, reconciliationStatus.failures);
     res.json({ ok: true, round: round ?? null });
   }));
 
@@ -852,12 +935,16 @@ function getSession(req: Request): IrisSession {
 
 type ActiveCasinoEntry = { service: unknown; id: string; phases: readonly string[] };
 
-function findActiveCasinoRounds(game: string, entry: ActiveCasinoEntry, discordUserId: string) {
+function findActiveCasinoRounds(game: string, entry: ActiveCasinoEntry, discordUserId: string, failures: readonly ReconciliationFailure[] = []) {
   const rounds = (entry.service as { rounds?: Map<string, Record<string, unknown>> }).rounds;
   if (!rounds) return [];
   return [...rounds.values()]
     .filter((round) => round.discordUserId === discordUserId && entry.phases.includes(String(round.phase)) && (game === "tower" || game === "holdem" || game === "threecard" || game === "ascent" || game === "arcana" || game === "moonshot" ? round.game === game : true))
-    .map((round) => ({ game, roundId: String(round[entry.id]), phase: String(round.phase), wallet: typeof round.wallet === "number" ? round.wallet : null, state: publicActiveState(game, round) }));
+    .map((round) => {
+      const roundId = String(round[entry.id]);
+      const failed = String(round.phase) === "reconciliation_failed" || failures.some((failure) => failure.game === game && failure.roundId === roundId);
+      return { game, roundId, phase: failed ? "reconciliation_failed" : String(round.phase), recovery: failed ? "support_required" : undefined, wallet: typeof round.wallet === "number" ? round.wallet : null, state: publicActiveState(game, round) };
+    });
 }
 
 function publicActiveState(game: string, round: Record<string, unknown>): Record<string, unknown> {
@@ -866,9 +953,14 @@ function publicActiveState(game: string, round: Record<string, unknown>): Record
     const dealer = Array.isArray(round.dealer) ? round.dealer.map((card, index) => String(round.phase) === "settling" || index === 0 ? card : null) : [];
     return { ...copy(["hands", "activeHand", "pendingStake", "wallet"]), dealer };
   }
+  if (game === "roulette") return copy(["bets", "payout", "wallet", "reconciliation"]);
   if (game === "craps") return copy(["selection", "bet", "point", "dice", "payout", "message", "lastRollId"]);
   if (game === "hilo") return copy(["bet", "current", "multiplier", "correct", "history", "payout", "lastActionId", "lastAction"]);
   if (game === "mines") return copy(["bet", "mineCount", "revealed", "multiplier", "hit", "payout", "lastActionId", "lastAction"]);
+  if (game === "arcana") {
+    const state = round.state as Record<string, unknown> | undefined;
+    return { ...copy(["bet", "payout", "lastActionId"]), state: { open: state?.open ?? [], matched: state?.matched ?? [], moves: state?.moves ?? 0 } };
+  }
   if (game === "scratch") return copy(["bet", "revealed", "payout", "lastActionId", "lastIndex"]);
   if (game === "war") return copy(["bet", "player", "dealer", "warPlayer", "warDealer", "payout", "label", "wentToWar", "lastActionId", "lastAction", "pendingAdditionalWager"]);
   const state = { ...(round.state as Record<string, unknown> | undefined) };
@@ -877,6 +969,165 @@ function publicActiveState(game: string, round: Record<string, unknown>): Record
   if (game === "ascent") delete state.crashPoint;
   if (game === "holdem" || game === "threecard") delete state.dealer;
   return { bet: round.bet, payout: round.payout, lastActionId: round.lastActionId, pendingAdditionalWager: round.pendingAdditionalWager, state };
+}
+
+function casinoRoundId(round: Record<string, unknown>): string | undefined {
+  for (const key of ["id", "roundId", "spinId", "ticketId", "drawId", "dropId"]) {
+    if (typeof round[key] === "string") return round[key];
+  }
+  return undefined;
+}
+
+async function reconcileTarget(target: ReconciliationTarget): Promise<ReconciliationFailure[]> {
+  const service = target.service as ReconciliationService;
+  if (!service.resume || !service.rounds) {
+    try {
+      await service.reconcileAll();
+      return [];
+    } catch (error) {
+      return [reconciliationFailure(target.game, undefined, error)];
+    }
+  }
+
+  const failures: ReconciliationFailure[] = [];
+  for (const round of service.rounds.values()) {
+    if (!shouldReconcileRound(round)) continue;
+    try {
+      await service.resume.call(service, round);
+      if (String(round.phase) === "reconciliation_failed") {
+        failures.push(reconciliationFailure(target.game === "legacy" && typeof round.game === "string" ? round.game : target.game, casinoRoundId(round), new ReconciliationQuarantinedError(safeReconciliationReason(round))));
+      }
+    } catch (error) {
+      failures.push(reconciliationFailure(target.game === "legacy" && typeof round.game === "string" ? round.game : target.game, casinoRoundId(round), error));
+    }
+  }
+  return failures;
+}
+
+function persistedReconciliationFailures(target: ReconciliationTarget): ReconciliationFailure[] {
+  const rounds = (target.service as ReconciliationService).rounds;
+  if (!rounds) return [];
+  return [...rounds.values()]
+    .filter((round) => String(round.phase) === "reconciliation_failed")
+    .map((round) => reconciliationFailure(target.game === "legacy" && typeof round.game === "string" ? round.game : target.game, casinoRoundId(round), new ReconciliationQuarantinedError(safeReconciliationReason(round))));
+}
+
+function safeReconciliationReason(round: Record<string, unknown>): string {
+  const reason = (round.reconciliation as Record<string, unknown> | undefined)?.reason;
+  return typeof reason === "string" && /^[a-z0-9_:-]{1,64}$/u.test(reason) ? reason : "reconciliation_failed";
+}
+
+function addReconciliationFailure(status: ReconciliationStatus, failure: ReconciliationFailure): boolean {
+  if (status.failures.some((existing) => existing.game === failure.game && existing.roundId === failure.roundId)) return false;
+  status.failures.push(failure);
+  return true;
+}
+
+function shouldReconcileRound(round: Record<string, unknown>): boolean {
+  return String(round.phase) === "reserving" || String(round.phase) === "settling";
+}
+
+function reconciliationFailure(game: string, roundId: string | undefined, source: unknown): ReconciliationFailure {
+  return {
+    game,
+    roundId,
+    errorName: source instanceof Error ? source.name : "NonErrorThrown",
+    errorCode: source instanceof AppError || source instanceof ReconciliationQuarantinedError ? source.code : undefined
+  };
+}
+
+function assertLegacyMigrationAccess(env: ServerEnv, discordUserId: string): void {
+  if (!env.LEGACY_MIGRATION_ENABLED) throw new AppError(404, "not_found", "Migration is unavailable.");
+  const allowlist = new Set(env.LEGACY_MIGRATION_ALLOWLIST.split(",").map((value) => value.trim()).filter(Boolean));
+  if (!allowlist.has(discordUserId)) throw new AppError(403, "forbidden", "Migration is not permitted for this account.");
+}
+
+function casinoDisabledGames(env: ServerEnv): string[] {
+  return [...new Set(env.CASINO_DISABLED_GAMES.split(",").map((value) => value.trim().toLowerCase()).filter((value) => /^[a-z0-9-]{1,32}$/u.test(value)))];
+}
+
+function isCasinoStartPath(path: string): boolean {
+  return /^\/[a-z0-9-]+\/(?:rounds|spins|tickets|drops|draws)$/u.test(path);
+}
+
+function assertCasinoStartAllowed(env: ServerEnv, game: string, body: unknown, reconciliation: ReconciliationStatus): void {
+  if (!reconciliation.complete || reconciliation.failures.length > 0) throw new AppError(503, "casino_maintenance", "New casino rounds are temporarily unavailable.");
+  if (!env.CASINO_NEW_BETS_ENABLED) throw new AppError(503, "casino_maintenance", "New casino rounds are temporarily unavailable.");
+  if (casinoDisabledGames(env).includes(game)) throw new AppError(503, "casino_game_disabled", "This game is temporarily unavailable.");
+  if (env.CASINO_BETA_MAX_BET <= 0) return;
+  const wager = requestedWager(game, body);
+  if (wager === null) throw new AppError(400, "bad_request", "The requested wager is invalid.");
+  if (wager > env.CASINO_BETA_MAX_BET) {
+    throw new AppError(400, "bet_out_of_range", "The requested wager exceeds the current beta limit.");
+  }
+}
+
+function requestedWager(game: string, body: unknown): number | null {
+  if (!body || typeof body !== "object") return null;
+  const value = body as Record<string, unknown>;
+  if (["roulette", "sicbo", "baccarat"].includes(game)) return summedBetAmounts(value.bets);
+  const supplied = [value.bet, value.wager].filter((amount) => amount !== undefined);
+  if (supplied.length !== 1 || typeof supplied[0] !== "number") return null;
+  return Number.isSafeInteger(supplied[0]) && supplied[0] > 0 ? supplied[0] : null;
+}
+
+function summedBetAmounts(value: unknown): number | null {
+  if (!Array.isArray(value) || value.length < 1) return null;
+  let total = 0;
+  for (const bet of value) {
+    const amount = bet && typeof bet === "object" ? (bet as Record<string, unknown>).amount : undefined;
+    if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount <= 0 || !Number.isSafeInteger(total + amount)) return null;
+    total += amount;
+  }
+  return total;
+}
+
+function requestedRoundId(body: unknown, preferredKey?: string): string | null {
+  if (!body || typeof body !== "object") return null;
+  const value = body as Record<string, unknown>;
+  if (preferredKey && typeof value[preferredKey] === "string") return value[preferredKey] as string;
+  for (const key of ["roundId", "spinId", "ticketId", "drawId", "dropId"]) if (typeof value[key] === "string") return value[key] as string;
+  return null;
+}
+
+function storagePathsWritable(env: ServerEnv): boolean {
+  const paths = [env.CASINO_STATE_PATH, env.ROULETTE_STATE_PATH, env.SLOTS_STATE_PATH, env.BACCARAT_STATE_PATH, env.POKER_STATE_PATH, env.SICBO_STATE_PATH, env.KENO_STATE_PATH, env.DRAGON_STATE_PATH, env.WHEEL_STATE_PATH, env.CRAPS_STATE_PATH, env.PLINKO_STATE_PATH, env.HILO_STATE_PATH, env.MINES_STATE_PATH, env.WAR_STATE_PATH, env.BINGO_STATE_PATH, env.SCRATCH_STATE_PATH, env.LEGACY_GAMES_STATE_PATH, env.ACTIVITY_PROGRESS_STATE_PATH, env.PARTY_STATE_PATH, env.DUEL_STATE_PATH];
+  const markers: string[] = [];
+  try {
+    for (const path of new Set(paths.map((path) => resolve(path)))) {
+      const marker = `${path}.ready-${process.pid}-${randomUUID()}`;
+      markers.push(marker);
+      mkdirSync(dirname(path), { recursive: true });
+      const descriptor = openSync(marker, "w", 0o600);
+      try {
+        writeSync(descriptor, "ready");
+      } finally {
+        closeSync(descriptor);
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    for (const marker of markers) {
+      try { unlinkSync(marker); } catch { /* Best-effort cleanup of readiness probes. */ }
+    }
+  }
+}
+
+async function checkEconomyReachable(env: ServerEnv, fetchFn: FetchLike): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.min(env.ECONOMY_API_TIMEOUT_MS, 2_000));
+  try {
+    const response = await fetchFn(`${env.IRIS_ECONOMY_API_BASE_URL.replace(/\/$/u, "")}/internal/v1/health`, { signal: controller.signal, headers: { authorization: `Bearer ${env.IRIS_ECONOMY_API_KEY}` } });
+    if (response.status !== 200) return false;
+    const payload = economyHealthSchema.safeParse(await response.json());
+    return payload.success;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function sessionSecret(env: ServerEnv): string {

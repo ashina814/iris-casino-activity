@@ -1,5 +1,7 @@
 import { randomInt } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { crapsRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -13,8 +15,8 @@ export interface CrapsRound { roundId: string; discordUserId: string; selection:
 export interface CrapsRoundStore { load(): CrapsRound[]; save(rounds: CrapsRound[]): void; }
 export class FileCrapsRoundStore implements CrapsRoundStore {
   constructor(private readonly filePath: string) {}
-  load(): CrapsRound[] { try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8")); if (!Array.isArray(value)) throw new Error("Craps state is invalid."); return value as CrapsRound[]; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; } }
-  save(rounds: CrapsRound[]): void { mkdirSync(dirname(this.filePath), { recursive: true }); writeFileSync(this.filePath, JSON.stringify(rounds), "utf8"); }
+  load(): CrapsRound[] { try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8", crapsRounds)); if (!Array.isArray(value)) throw new Error("Craps state is invalid."); return value as CrapsRound[]; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; } }
+  save(rounds: CrapsRound[]): void { mkdirSync(dirname(this.filePath), { recursive: true }); writeFileSync(this.filePath, JSON.stringify(rounds), "utf8", crapsRounds); }
 }
 export class CrapsService {
   private readonly rounds: Map<string, CrapsRound>;

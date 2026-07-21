@@ -31,7 +31,7 @@ describe("LegacyGamesService", () => {
   });
 
   it("does not expose a live Hold'em dealer hand", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(response(12400, "reserved", null));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response(12400, "reserved", null)));
     const service = new LegacyGamesService({ env: loadEnv({ NODE_ENV: "test", IRIS_ECONOMY_API_BASE_URL: "http://economy.local", IRIS_ECONOMY_API_KEY: "test-economy-api-key" }), fetch: fetchMock, store: new MemoryStore() });
     const user = { id: "234567890123456789", username: "Yuki", displayName: "Yuki", avatarUrl: null };
 
@@ -62,5 +62,18 @@ describe("LegacyGamesService", () => {
 
     const round = await service.action(user, "ascent-auto", "ascent-tick", "tick");
     expect(round).toMatchObject({ phase: "settled", payout: 150, state: { multiplier: 1.5, autoCash: 1.5 } });
+  });
+
+  it("requires an exact legacy start fingerprint when replaying a round", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response(12400, "reserved", null)));
+    const service = new LegacyGamesService({ env: loadEnv({ NODE_ENV: "test", IRIS_ECONOMY_API_BASE_URL: "http://economy.local", IRIS_ECONOMY_API_KEY: "test-economy-api-key" }), fetch: fetchMock, store: new MemoryStore() });
+    const user = { id: "234567890123456789", username: "Yuki", displayName: "Yuki", avatarUrl: null };
+
+    await service.start(user, "threecard", "threecard-fingerprint", 100, { pairPlus: true });
+    await expect(service.start(user, "threecard", "threecard-fingerprint", 100, { pairPlus: false })).rejects.toMatchObject({ code: "casino_transaction_conflict" });
+    await service.start(user, "ascent", "ascent-fingerprint", 100, { auto: 2 });
+    await expect(service.start(user, "ascent", "ascent-fingerprint", 100, { auto: 3 })).rejects.toMatchObject({ code: "casino_transaction_conflict" });
+    await service.start(user, "derby", "derby-fingerprint", 100, { selection: 1 });
+    await expect(service.start(user, "derby", "derby-fingerprint", 100, { selection: 2 })).rejects.toMatchObject({ code: "casino_transaction_conflict" });
   });
 });

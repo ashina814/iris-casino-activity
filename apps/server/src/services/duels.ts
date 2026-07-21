@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { randomInt, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { duelRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 
@@ -10,7 +12,7 @@ const suits = ["S", "H", "D", "C"];
 const red = new Set([1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]);
 type Duel = Record<string, any>;
 
-export class FileDuelStore { constructor(private readonly path:string) {} load():Duel[]{try{const v=JSON.parse(readFileSync(this.path,"utf8"));return Array.isArray(v)?v:[]}catch(e){if(e instanceof Error&&"code" in e&&e.code==="ENOENT")return [];throw e}} save(v:Duel[]){mkdirSync(dirname(this.path),{recursive:true});writeFileSync(this.path,JSON.stringify(v),"utf8")} }
+export class FileDuelStore { constructor(private readonly path:string) {} load():Duel[]{try{const v=JSON.parse(readFileSync(this.path, "utf8", duelRounds));return Array.isArray(v)?v:[]}catch(e){if(e instanceof Error&&"code" in e&&e.code==="ENOENT")return [];throw e}} save(v:Duel[]){mkdirSync(dirname(this.path),{recursive:true});writeFileSync(this.path, JSON.stringify(v), "utf8", duelRounds)} }
 export class DuelService {
   private duels=new Map<string,Duel>();
   constructor(private readonly store:FileDuelStore){for(const duel of store.load())this.duels.set(duel.id,duel)}

@@ -1,5 +1,7 @@
 import { randomInt } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { pokerRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -44,7 +46,7 @@ export class FilePokerRoundStore implements PokerRoundStore {
 
   load(): PokerRound[] {
     try {
-      const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
+      const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8", pokerRounds));
       if (!Array.isArray(value)) throw new Error("Poker state is invalid.");
       return value as PokerRound[];
     } catch (error) {
@@ -55,7 +57,7 @@ export class FilePokerRoundStore implements PokerRoundStore {
 
   save(rounds: PokerRound[]): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(rounds), "utf8");
+    writeFileSync(this.filePath, JSON.stringify(rounds), "utf8", pokerRounds);
   }
 }
 

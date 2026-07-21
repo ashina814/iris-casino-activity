@@ -19,4 +19,21 @@ describe("atomic JSON storage", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("does not replace a valid backup with a corrupt primary during the next save", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "iris-atomic-json-"));
+    const filePath = join(directory, "state.json");
+    try {
+      writeJsonFile(filePath, { version: 1 });
+      writeJsonFile(filePath, { version: 2 });
+      await writeFile(filePath, "{broken", "utf8");
+
+      writeJsonFile(filePath, { version: 3 });
+
+      expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({ version: 3 });
+      expect(JSON.parse(await readFile(`${filePath}.bak`, "utf8"))).toEqual({ version: 1 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });

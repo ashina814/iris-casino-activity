@@ -48,11 +48,22 @@ export function writeJsonFile(filePath: string, value: unknown, _encoding?: unkn
         if (!isUnsupportedSync(error)) throw error;
       }
     } finally { closeSync(descriptor); }
-    if (existsSync(filePath)) writeFileSync(`${filePath}.bak`, readFileSync(filePath), { mode: 0o600 });
+    if (existsSync(filePath)) backupValidPrimary(filePath);
     renameSync(temporaryPath, filePath);
   } finally {
     if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
   }
+}
+
+function backupValidPrimary(filePath: string): void {
+  const primary = readFileSync(filePath, "utf8");
+  try {
+    JSON.parse(primary);
+  } catch {
+    // Preserve the last known-good backup when the primary is already corrupt.
+    return;
+  }
+  writeFileSync(`${filePath}.bak`, primary, { encoding: "utf8", mode: 0o600 });
 }
 
 function parse<T>(filePath: string, validate: (value: unknown) => value is T): T {

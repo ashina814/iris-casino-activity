@@ -104,6 +104,27 @@ describe("server API", () => {
     }
   });
 
+  it("quarantines a reconciliation failure in the active-round API without exposing the error", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "iris-reconcile-failure-"));
+    try {
+      const minesPath = join(dir, "mines.json");
+      await writeFile(minesPath, JSON.stringify([{
+        roundId: "mines-reconcile", discordUserId: "234567890123456789", bet: 100, mineCount: 3, mines: [1, 2, 3], revealed: [], multiplier: 1, hit: false, payout: null, wallet: null, phase: "reserving", lastActionId: null, lastAction: null
+      }]));
+      const app = createApp({ env: { ...baseEnv, MINES_STATE_PATH: minesPath }, fetch: vi.fn().mockRejectedValue(new Error("economy unavailable")), logger: silentLogger });
+      await app.locals.reconciliation;
+      const agent = request.agent(app);
+      await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+      const ready = await agent.get("/api/ready").expect(503);
+      expect(ready.body).toMatchObject({ reconciliationComplete: true, reconciliationFailures: 1 });
+      const active = await agent.get("/api/games/mines/active-round").expect(200);
+      expect(active.body.round).toMatchObject({ roundId: "mines-reconcile", phase: "reconciliation_failed", recovery: "support_required" });
+      expect(JSON.stringify(active.body)).not.toContain("economy unavailable");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("exposes only the public Activity runtime configuration", async () => {
     const res = await request(appWith()).get("/api/config").expect(200);
 

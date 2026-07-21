@@ -46,10 +46,7 @@ export class RouletteService {
   }
 
   async reconcileAll(): Promise<void> {
-    await Promise.all([...this.rounds.values()].filter((round) => round.phase !== "settled" && round.phase !== "reconciliation_failed").map(async (round) => {
-      try { await this.resume(round); }
-      catch (error) { console.error("casino_round_reconcile_failed", { game: "roulette", roundId: round.spinId, phase: round.phase, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: error instanceof Error ? error.message : "unknown reconciliation error" }); }
-    }));
+    await Promise.all([...this.rounds.values()].filter((round) => round.phase !== "settled" && round.phase !== "reconciliation_failed").map((round) => this.resume(round)));
   }
 
   async spin(user: DiscordUser, spinId: string, bets: RouletteBet[]): Promise<RouletteRound> {

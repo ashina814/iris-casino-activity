@@ -14,7 +14,8 @@ const stores: Array<[string, string, "id" | "roundId" | "spinId" | "ticketId" | 
 const rounds = stores.flatMap(([game, path, idKey]) => readRounds(path).flatMap((round) => {
   if (userId && round.discordUserId !== userId) return [];
   if (activeOnly && round.phase === "settled") return [];
-  return [{ game: typeof round.game === "string" ? round.game : game, roundId: stringValue(round[idKey]), discordUserId: stringValue(round.discordUserId), phase: stringValue(round.phase), bet: numberValue(round.bet), payout: numberValue(round.payout), transactionId: transactionId(game, round, idKey) }];
+  const phase = stringValue(round.phase);
+  return [{ game: typeof round.game === "string" ? round.game : game, roundId: stringValue(round[idKey]), discordUserId: stringValue(round.discordUserId), phase, bet: numberValue(round.bet), payout: numberValue(round.payout), transactionId: transactionId(game, round, idKey), reconciliationFailure: phase === "reconciliation_failed" }];
 }));
 
 process.stdout.write(`${JSON.stringify({ rounds }, null, 2)}\n`);

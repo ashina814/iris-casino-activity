@@ -50,8 +50,17 @@ type IrisSession = CookieSessionInterfaces.CookieSessionObject & {
   user?: DiscordUser;
 };
 
-type ReconciliationFailure = { game: string; errorName: string; errorCode?: string };
+type ReconciliationFailure = { game: string; roundId?: string; errorName: string; errorCode?: string };
 type ReconciliationStatus = { complete: boolean; failures: ReconciliationFailure[] };
+type ReconciliationTarget = { game: string; service: { reconcileAll(): Promise<void> } };
+type ReconciliationService = { reconcileAll(): Promise<void>; resume?: (round: Record<string, unknown>) => Promise<void> };
+
+class ReconciliationRoundError extends Error {
+  constructor(readonly game: string, readonly roundId: string | undefined, readonly source: unknown) {
+    super("Casino round reconciliation failed.");
+    this.name = "ReconciliationRoundError";
+  }
+}
 
 export function createApp(options: CreateAppOptions = {}) {
   const env = loadEnv(options.env);
@@ -85,6 +94,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const duels = new DuelService(new FileDuelStore(env.DUEL_STATE_PATH));
   const activeCasinoGames = {
     blackjack: { service: blackjack, id: "id", phases: ["reserving", "player", "settling"] },
+    roulette: { service: roulette, id: "spinId", phases: ["reserving", "settling", "reconciliation_failed"] },
     craps: { service: craps, id: "roundId", phases: ["reserving", "active", "settling"] },
     hilo: { service: hilo, id: "roundId", phases: ["reserving", "active", "settling"] },
     mines: { service: mines, id: "roundId", phases: ["reserving", "active", "settling"] },
@@ -98,31 +108,29 @@ export function createApp(options: CreateAppOptions = {}) {
     moonshot: { service: legacyGames, id: "id", phases: ["reserving", "active", "settling"] }
   } as const;
   const assertNoReplacementActiveRound = (game: keyof typeof activeCasinoGames, discordUserId: string, requestedRoundId: string) => {
-    const active = findActiveCasinoRounds(game, activeCasinoGames[game], discordUserId);
+    const active = findActiveCasinoRounds(game, activeCasinoGames[game], discordUserId, reconciliationStatus.failures);
     if (active.some((round) => round.roundId !== requestedRoundId)) {
       throw new AppError(409, "casino_transaction_conflict", "Resume the existing active round before starting another one.");
     }
   };
-  const reconciliationTargets = [
-    ["roulette", roulette.reconcileAll()], ["slots", slots.reconcileAll()], ["baccarat", baccarat.reconcileAll()], ["poker", poker.reconcileAll()],
-    ["sicbo", sicbo.reconcileAll()], ["keno", keno.reconcileAll()], ["dragon", dragon.reconcileAll()], ["wheel", wheel.reconcileAll()],
-    ["craps", craps.reconcileAll()], ["plinko", plinko.reconcileAll()], ["hilo", hilo.reconcileAll()], ["mines", mines.reconcileAll()],
-    ["war", war.reconcileAll()], ["bingo", bingo.reconcileAll()], ["scratch", scratch.reconcileAll()], ["legacy", legacyGames.reconcileAll()]
-  ] as const;
+  const reconciliationTargets: ReconciliationTarget[] = [
+    { game: "roulette", service: roulette }, { game: "slots", service: slots }, { game: "baccarat", service: baccarat }, { game: "poker", service: poker },
+    { game: "sicbo", service: sicbo }, { game: "keno", service: keno }, { game: "dragon", service: dragon }, { game: "wheel", service: wheel },
+    { game: "craps", service: craps }, { game: "plinko", service: plinko }, { game: "hilo", service: hilo }, { game: "mines", service: mines },
+    { game: "war", service: war }, { game: "bingo", service: bingo }, { game: "scratch", service: scratch }, { game: "legacy", service: legacyGames }
+  ];
   const reconciliationStatus: ReconciliationStatus = { complete: false, failures: [] };
-  const reconciliation = Promise.allSettled(reconciliationTargets.map(([, task]) => task)).then((results) => {
+  const reconciliation = Promise.allSettled(reconciliationTargets.map(reconcileTarget)).then((results) => {
     results.forEach((result, index) => {
       if (result.status === "rejected") {
-        const error = result.reason;
-        reconciliationStatus.failures.push({
-          game: reconciliationTargets[index]![0],
-          errorName: error instanceof Error ? error.name : "NonErrorThrown",
-          errorCode: error instanceof AppError ? error.code : undefined
-        });
+        const target = reconciliationTargets[index]!;
+        const failure = reconciliationFailure(target.game, result.reason);
+        reconciliationStatus.failures.push(failure);
         logger.error("casino_reconcile_failed", {
-          game: reconciliationTargets[index]![0],
-          errorName: error instanceof Error ? error.name : "NonErrorThrown",
-          errorMessage: error instanceof Error ? error.message : "unknown reconciliation error"
+          game: failure.game,
+          roundId: failure.roundId,
+          errorName: failure.errorName,
+          errorCode: failure.errorCode
         });
       }
     });
@@ -228,7 +236,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/casino/active-rounds", asyncRoute(async (req, res) => {
     const user = getSession(req).user;
     if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
-    res.json({ ok: true, userId: user.id, rounds: Object.entries(activeCasinoGames).flatMap(([game, entry]) => findActiveCasinoRounds(game, entry, user.id)) });
+    res.json({ ok: true, userId: user.id, rounds: Object.entries(activeCasinoGames).flatMap(([game, entry]) => findActiveCasinoRounds(game, entry, user.id, reconciliationStatus.failures)) });
   }));
 
   app.get("/api/games/:game/active-round", asyncRoute(async (req, res) => {
@@ -237,7 +245,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!user) throw new AppError(401, "unauthorized", "Authentication is required.");
     const entry = activeCasinoGames[game];
     if (!entry) throw new AppError(404, "not_found", "Game was not found.");
-    const [round] = findActiveCasinoRounds(game, entry, user.id);
+    const [round] = findActiveCasinoRounds(game, entry, user.id, reconciliationStatus.failures);
     res.json({ ok: true, round: round ?? null });
   }));
 
@@ -898,12 +906,16 @@ function getSession(req: Request): IrisSession {
 
 type ActiveCasinoEntry = { service: unknown; id: string; phases: readonly string[] };
 
-function findActiveCasinoRounds(game: string, entry: ActiveCasinoEntry, discordUserId: string) {
+function findActiveCasinoRounds(game: string, entry: ActiveCasinoEntry, discordUserId: string, failures: readonly ReconciliationFailure[] = []) {
   const rounds = (entry.service as { rounds?: Map<string, Record<string, unknown>> }).rounds;
   if (!rounds) return [];
   return [...rounds.values()]
     .filter((round) => round.discordUserId === discordUserId && entry.phases.includes(String(round.phase)) && (game === "tower" || game === "holdem" || game === "threecard" || game === "ascent" || game === "arcana" || game === "moonshot" ? round.game === game : true))
-    .map((round) => ({ game, roundId: String(round[entry.id]), phase: String(round.phase), wallet: typeof round.wallet === "number" ? round.wallet : null, state: publicActiveState(game, round) }));
+    .map((round) => {
+      const roundId = String(round[entry.id]);
+      const failed = String(round.phase) === "reconciliation_failed" || failures.some((failure) => failure.game === game && failure.roundId === roundId);
+      return { game, roundId, phase: failed ? "reconciliation_failed" : String(round.phase), recovery: failed ? "support_required" : undefined, wallet: typeof round.wallet === "number" ? round.wallet : null, state: publicActiveState(game, round) };
+    });
 }
 
 function publicActiveState(game: string, round: Record<string, unknown>): Record<string, unknown> {
@@ -912,6 +924,7 @@ function publicActiveState(game: string, round: Record<string, unknown>): Record
     const dealer = Array.isArray(round.dealer) ? round.dealer.map((card, index) => String(round.phase) === "settling" || index === 0 ? card : null) : [];
     return { ...copy(["hands", "activeHand", "pendingStake", "wallet"]), dealer };
   }
+  if (game === "roulette") return copy(["bets", "payout", "wallet", "reconciliation"]);
   if (game === "craps") return copy(["selection", "bet", "point", "dice", "payout", "message", "lastRollId"]);
   if (game === "hilo") return copy(["bet", "current", "multiplier", "correct", "history", "payout", "lastActionId", "lastAction"]);
   if (game === "mines") return copy(["bet", "mineCount", "revealed", "multiplier", "hit", "payout", "lastActionId", "lastAction"]);
@@ -927,6 +940,42 @@ function publicActiveState(game: string, round: Record<string, unknown>): Record
   if (game === "ascent") delete state.crashPoint;
   if (game === "holdem" || game === "threecard") delete state.dealer;
   return { bet: round.bet, payout: round.payout, lastActionId: round.lastActionId, pendingAdditionalWager: round.pendingAdditionalWager, state };
+}
+
+function casinoRoundId(round: Record<string, unknown>): string | undefined {
+  for (const key of ["id", "roundId", "spinId", "ticketId", "drawId", "dropId"]) {
+    if (typeof round[key] === "string") return round[key];
+  }
+  return undefined;
+}
+
+async function reconcileTarget(target: ReconciliationTarget): Promise<void> {
+  const service = target.service as ReconciliationService;
+  const resume = service.resume;
+  if (!resume) return service.reconcileAll();
+  service.resume = async (round) => {
+    try {
+      return await resume.call(service, round);
+    } catch (error) {
+      const game = target.game === "legacy" && typeof round.game === "string" ? round.game : target.game;
+      throw new ReconciliationRoundError(game, casinoRoundId(round), error);
+    }
+  };
+  try {
+    await service.reconcileAll();
+  } finally {
+    service.resume = resume;
+  }
+}
+
+function reconciliationFailure(defaultGame: string, error: unknown): ReconciliationFailure {
+  const source = error instanceof ReconciliationRoundError ? error.source : error;
+  return {
+    game: error instanceof ReconciliationRoundError ? error.game : defaultGame,
+    roundId: error instanceof ReconciliationRoundError ? error.roundId : undefined,
+    errorName: source instanceof Error ? source.name : "NonErrorThrown",
+    errorCode: source instanceof AppError ? source.code : undefined
+  };
 }
 
 function assertLegacyMigrationAccess(env: ServerEnv, discordUserId: string): void {

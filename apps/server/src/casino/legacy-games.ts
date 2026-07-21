@@ -23,7 +23,7 @@ export class FileLegacyGameStore implements LegacyGameStore {
 export class LegacyGamesService {
   private readonly rounds: Map<string, Round>;
   constructor(private readonly options: { env: ServerEnv; fetch: FetchLike; store: LegacyGameStore }) { this.rounds = new Map(options.store.load().map((round) => [round.id, round])); }
-  async reconcileAll() { await Promise.all([...this.rounds.values()].filter((round) => round.phase === "reserving" || round.phase === "settling" || Boolean(round.pendingAdditionalWager)).map(async (round) => { try { await this.resume(round); } catch (error) { console.error("casino_round_reconcile_failed", { game: round.game, roundId: round.id, phase: round.phase, errorName: error instanceof Error ? error.name : "NonErrorThrown", errorMessage: error instanceof Error ? error.message : "unknown reconciliation error" }); } })); }
+  async reconcileAll() { await Promise.all([...this.rounds.values()].filter((round) => round.phase === "reserving" || round.phase === "settling" || Boolean(round.pendingAdditionalWager)).map((round) => this.resume(round))); }
   async start(user: DiscordUser, game: Game, id: string, bet: number, extra: Record<string, unknown> = {}) {
     this.validate(game, id, bet); const existing = this.rounds.get(id);
     if (existing) { if (existing.discordUserId !== user.id || existing.game !== game || existing.bet !== bet) throw conflict(); await this.resume(existing); return this.public(existing); }

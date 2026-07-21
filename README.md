@@ -1,5 +1,9 @@
 # IRIS Casino Activity
 
+Discord ActivityとしてRIS残高を使うCasinoサーバーです。賭けはEconomy APIのreserve/settleを通し、round IDとaction IDで冪等化します。`/api/health` は生存確認、`/api/ready` はEconomy・storage・reconciliationを含む公開可否です。
+
+公開前は `npm run check` を実行し、[DEPLOY.md](DEPLOY.md)、[OPERATIONS.md](OPERATIONS.md)、[INCIDENTS.md](INCIDENTS.md)、[GAME_TEST_MATRIX.md](GAME_TEST_MATRIX.md) に従ってください。
+
 IRIS Casino Activity は、Discord Activity として起動する IRIS カジノの最小構成プロジェクトです。今回の範囲はゲーム本体ではなく、Discord 認証の骨組み、ログイン中ユーザー取得、IRIS Economy API への安全なバックエンド中継、入口からロビーまでの Activity 画面です。
 
 ## 構成

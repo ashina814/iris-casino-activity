@@ -1,5 +1,6 @@
 import { randomInt } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";

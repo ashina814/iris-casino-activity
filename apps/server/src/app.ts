@@ -4,6 +4,8 @@ import cookieSession from "cookie-session";
 import cors from "cors";
 import express, { type ErrorRequestHandler, type Request, type Response as ExpressResponse } from "express";
 import helmet from "helmet";
+import { closeSync, mkdirSync, openSync, unlinkSync, writeSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import { exchangeDiscordCode, mockDiscordUser } from "./auth/discord.js";
 import { BlackjackService, FileBlackjackRoundStore, type BlackjackAction } from "./casino/blackjack.js";
@@ -47,6 +49,9 @@ export interface CreateAppOptions {
 type IrisSession = CookieSessionInterfaces.CookieSessionObject & {
   user?: DiscordUser;
 };
+
+type ReconciliationFailure = { game: string; errorName: string; errorCode?: string };
+type ReconciliationStatus = { complete: boolean; failures: ReconciliationFailure[] };
 
 export function createApp(options: CreateAppOptions = {}) {
   const env = loadEnv(options.env);
@@ -104,10 +109,16 @@ export function createApp(options: CreateAppOptions = {}) {
     ["craps", craps.reconcileAll()], ["plinko", plinko.reconcileAll()], ["hilo", hilo.reconcileAll()], ["mines", mines.reconcileAll()],
     ["war", war.reconcileAll()], ["bingo", bingo.reconcileAll()], ["scratch", scratch.reconcileAll()], ["legacy", legacyGames.reconcileAll()]
   ] as const;
+  const reconciliationStatus: ReconciliationStatus = { complete: false, failures: [] };
   const reconciliation = Promise.allSettled(reconciliationTargets.map(([, task]) => task)).then((results) => {
     results.forEach((result, index) => {
       if (result.status === "rejected") {
         const error = result.reason;
+        reconciliationStatus.failures.push({
+          game: reconciliationTargets[index]![0],
+          errorName: error instanceof Error ? error.name : "NonErrorThrown",
+          errorCode: error instanceof AppError ? error.code : undefined
+        });
         logger.error("casino_reconcile_failed", {
           game: reconciliationTargets[index]![0],
           errorName: error instanceof Error ? error.name : "NonErrorThrown",
@@ -115,6 +126,7 @@ export function createApp(options: CreateAppOptions = {}) {
         });
       }
     });
+    reconciliationStatus.complete = true;
   });
   app.locals.reconciliation = reconciliation;
 
@@ -169,6 +181,19 @@ export function createApp(options: CreateAppOptions = {}) {
       maxAge: 1000 * 60 * 60 * 8
     })
   );
+  app.use("/api/economy", (req, _res, next) => {
+    if (req.method !== "POST" || !req.path.endsWith("/migrate")) return next();
+    const user = getSession(req).user;
+    if (!user) return next();
+    assertLegacyMigrationAccess(env, user.id);
+    next();
+  });
+  app.use("/api/games", (req, _res, next) => {
+    if (req.method !== "POST" || !isCasinoStartPath(req.path)) return next();
+    const game = req.path.split("/")[1] ?? "";
+    assertCasinoStartAllowed(env, game, req.body);
+    next();
+  });
   app.use("/api/games", createRateLimit({ max: 300, windowMs: 60_000, key: requestPlayer }));
 
   app.get("/api/health", (_req, res) => {
@@ -178,6 +203,27 @@ export function createApp(options: CreateAppOptions = {}) {
       version: "0.1.0"
     });
   });
+
+  app.get("/api/ready", asyncRoute(async (_req, res) => {
+    const storageWritable = storagePathsWritable(env);
+    const economyReachable = await checkEconomyReachable(env, fetchFn);
+    const disabledGames = casinoDisabledGames(env);
+    const acceptingNewBets = reconciliationStatus.complete
+      && reconciliationStatus.failures.length === 0
+      && economyReachable
+      && storageWritable
+      && env.CASINO_NEW_BETS_ENABLED;
+    const payload = {
+      ok: acceptingNewBets,
+      reconciliationComplete: reconciliationStatus.complete,
+      reconciliationFailures: reconciliationStatus.failures.length,
+      economyReachable,
+      storageWritable,
+      acceptingNewBets,
+      disabledGames
+    };
+    res.status(payload.ok ? 200 : 503).json(payload);
+  }));
 
   app.get("/api/casino/active-rounds", asyncRoute(async (req, res) => {
     const user = getSession(req).user;
@@ -869,6 +915,10 @@ function publicActiveState(game: string, round: Record<string, unknown>): Record
   if (game === "craps") return copy(["selection", "bet", "point", "dice", "payout", "message", "lastRollId"]);
   if (game === "hilo") return copy(["bet", "current", "multiplier", "correct", "history", "payout", "lastActionId", "lastAction"]);
   if (game === "mines") return copy(["bet", "mineCount", "revealed", "multiplier", "hit", "payout", "lastActionId", "lastAction"]);
+  if (game === "arcana") {
+    const state = round.state as Record<string, unknown> | undefined;
+    return { ...copy(["bet", "payout", "lastActionId"]), state: { open: state?.open ?? [], matched: state?.matched ?? [], moves: state?.moves ?? 0 } };
+  }
   if (game === "scratch") return copy(["bet", "revealed", "payout", "lastActionId", "lastIndex"]);
   if (game === "war") return copy(["bet", "player", "dealer", "warPlayer", "warDealer", "payout", "label", "wentToWar", "lastActionId", "lastAction", "pendingAdditionalWager"]);
   const state = { ...(round.state as Record<string, unknown> | undefined) };
@@ -877,6 +927,70 @@ function publicActiveState(game: string, round: Record<string, unknown>): Record
   if (game === "ascent") delete state.crashPoint;
   if (game === "holdem" || game === "threecard") delete state.dealer;
   return { bet: round.bet, payout: round.payout, lastActionId: round.lastActionId, pendingAdditionalWager: round.pendingAdditionalWager, state };
+}
+
+function assertLegacyMigrationAccess(env: ServerEnv, discordUserId: string): void {
+  if (!env.LEGACY_MIGRATION_ENABLED) throw new AppError(404, "not_found", "Migration is unavailable.");
+  const allowlist = new Set(env.LEGACY_MIGRATION_ALLOWLIST.split(",").map((value) => value.trim()).filter(Boolean));
+  if (!allowlist.has(discordUserId)) throw new AppError(403, "forbidden", "Migration is not permitted for this account.");
+}
+
+function casinoDisabledGames(env: ServerEnv): string[] {
+  return [...new Set(env.CASINO_DISABLED_GAMES.split(",").map((value) => value.trim().toLowerCase()).filter((value) => /^[a-z0-9-]{1,32}$/u.test(value)))];
+}
+
+function isCasinoStartPath(path: string): boolean {
+  return /^\/[a-z0-9-]+\/(?:rounds|spins|tickets|drops|draws)$/u.test(path);
+}
+
+function assertCasinoStartAllowed(env: ServerEnv, game: string, body: unknown): void {
+  if (!env.CASINO_NEW_BETS_ENABLED) throw new AppError(503, "casino_maintenance", "New casino rounds are temporarily unavailable.");
+  if (casinoDisabledGames(env).includes(game)) throw new AppError(503, "casino_game_disabled", "This game is temporarily unavailable.");
+  const wager = requestedWager(body);
+  if (env.CASINO_BETA_MAX_BET > 0 && wager !== null && wager > env.CASINO_BETA_MAX_BET) {
+    throw new AppError(400, "bet_out_of_range", "The requested wager exceeds the current beta limit.");
+  }
+}
+
+function requestedWager(body: unknown): number | null {
+  if (!body || typeof body !== "object") return null;
+  const value = body as Record<string, unknown>;
+  for (const key of ["bet", "wager", "amount"]) if (typeof value[key] === "number") return value[key] as number;
+  if (Array.isArray(value.bets)) return value.bets.reduce<number>((total, bet) => {
+    const amount = typeof bet === "object" && bet ? (bet as Record<string, unknown>).amount : undefined;
+    return total + (typeof amount === "number" ? amount : 0);
+  }, 0);
+  return null;
+}
+
+function storagePathsWritable(env: ServerEnv): boolean {
+  const paths = [env.CASINO_STATE_PATH, env.ROULETTE_STATE_PATH, env.SLOTS_STATE_PATH, env.BACCARAT_STATE_PATH, env.POKER_STATE_PATH, env.SICBO_STATE_PATH, env.KENO_STATE_PATH, env.DRAGON_STATE_PATH, env.WHEEL_STATE_PATH, env.CRAPS_STATE_PATH, env.PLINKO_STATE_PATH, env.HILO_STATE_PATH, env.MINES_STATE_PATH, env.WAR_STATE_PATH, env.BINGO_STATE_PATH, env.SCRATCH_STATE_PATH, env.LEGACY_GAMES_STATE_PATH, env.ACTIVITY_PROGRESS_STATE_PATH, env.PARTY_STATE_PATH, env.DUEL_STATE_PATH];
+  try {
+    for (const path of new Set(paths.map((path) => resolve(path)))) {
+      const marker = `${path}.ready-${process.pid}`;
+      mkdirSync(dirname(path), { recursive: true });
+      const descriptor = openSync(marker, "w", 0o600);
+      writeSync(descriptor, "ready");
+      closeSync(descriptor);
+      unlinkSync(marker);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function checkEconomyReachable(env: ServerEnv, fetchFn: FetchLike): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.min(env.ECONOMY_API_TIMEOUT_MS, 2_000));
+  try {
+    const response = await fetchFn(`${env.IRIS_ECONOMY_API_BASE_URL.replace(/\/$/u, "")}/health`, { signal: controller.signal, headers: { authorization: `Bearer ${env.IRIS_ECONOMY_API_KEY}` } });
+    return response.status < 500;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function sessionSecret(env: ServerEnv): string {

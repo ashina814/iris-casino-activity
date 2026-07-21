@@ -74,6 +74,32 @@ describe("server API", () => {
     expect(JSON.stringify(res.body)).not.toContain("super-secret");
   });
 
+  it("keeps legacy migration routes closed by default and blocks only new casino starts during maintenance", async () => {
+    const app = createApp({ env: { ...baseEnv, CASINO_NEW_BETS_ENABLED: "false" }, logger: silentLogger });
+    await app.locals.reconciliation;
+    const agent = request.agent(app);
+    await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+    await agent.post("/api/economy/ascension/migrate").send({ mastery: {}, nodes: [], points: 0 }).expect(404);
+    const start = await agent.post("/api/games/mines/rounds").send({ roundId: "maintenance-mines", bet: 100, mineCount: 3 }).expect(503);
+    expect(start.body.error.code).toBe("casino_maintenance");
+  });
+
+  it("redacts Arcana card identities from active round APIs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "iris-arcana-redaction-"));
+    try {
+      const app = createApp({ env: { ...baseEnv, LEGACY_GAMES_STATE_PATH: join(dir, "legacy.json") }, fetch: vi.fn().mockResolvedValue(jsonResponse({ ok: true, wallet: 12_400, currency: "Ris", transaction: { transactionId: "arcana-redaction", sessionId: "arcana-redaction", game: "arcana", bet: 100, status: "reserved", payout: null } })), logger: silentLogger });
+      await app.locals.reconciliation;
+      const agent = request.agent(app);
+      await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+      await agent.post("/api/games/arcana/rounds").send({ roundId: "arcana-redaction", bet: 100 }).expect(201);
+      const active = await agent.get("/api/games/arcana/active-round").expect(200);
+      expect(active.body.round.state).not.toHaveProperty("cards");
+      expect(active.body.round.state.state).toMatchObject({ open: expect.any(Array), matched: expect.any(Array) });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("exposes only the public Activity runtime configuration", async () => {
     const res = await request(appWith()).get("/api/config").expect(200);
 

@@ -20,6 +20,11 @@ export const ServerEnvSchema = z.object({
   IRIS_ECONOMY_API_BASE_URL: z.string().url().default("http://127.0.0.1:8787"),
   IRIS_ECONOMY_API_KEY: z.string().default(""),
   ECONOMY_API_TIMEOUT_MS: z.coerce.number().int().positive().max(10000).default(2500),
+  LEGACY_MIGRATION_ENABLED: booleanFromEnv.default(false),
+  LEGACY_MIGRATION_ALLOWLIST: z.string().default(""),
+  CASINO_NEW_BETS_ENABLED: booleanFromEnv.default(true),
+  CASINO_DISABLED_GAMES: z.string().default(""),
+  CASINO_BETA_MAX_BET: z.coerce.number().int().nonnegative().max(1_000_000).default(0),
   CASINO_STATE_PATH: z.string().min(1).default("data/casino-rounds.json"),
   ROULETTE_STATE_PATH: z.string().min(1).default("data/roulette-rounds.json"),
   SLOTS_STATE_PATH: z.string().min(1).default("data/slots-rounds.json"),
@@ -72,6 +77,9 @@ export function loadEnv(overrides: Record<string, unknown> = {}): ServerEnv {
     }
     if (!env.WEB_ORIGIN.startsWith("https://")) {
       throw new Error("WEB_ORIGIN must use HTTPS in production.");
+    }
+    if (env.LEGACY_MIGRATION_ENABLED && !env.LEGACY_MIGRATION_ALLOWLIST.trim()) {
+      throw new Error("LEGACY_MIGRATION_ALLOWLIST must be configured when legacy migration is enabled in production.");
     }
   }
 

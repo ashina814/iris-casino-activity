@@ -73,6 +73,7 @@
     write(pending);
     userScope = nextScope;
     if (!scopeResolved) { scopeResolved = true; resolveScope(nextScope); }
+    window.dispatchEvent(new CustomEvent("iris-user-scope-ready", { detail: { userId: nextScope } }));
   }
   async function waitForUserScope() {
     if (scopeResolved && userScope) return userScope;

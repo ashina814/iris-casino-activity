@@ -241,10 +241,58 @@
     if (game.irisEconomyPatched) return;
     game.irisEconomyPatched = true;
     const apply = (round) => {
-      game.remoteRoundId = round.roundId; game.mineCount = round.mineCount; game.revealed = new Set(round.revealed); game.multiplier = round.multiplier;
+      game.remoteRoundId = round.roundId; game.bet = round.bet; game.mineCount = round.mineCount; game.revealed = new Set(round.revealed); game.multiplier = round.multiplier;
       game.mines = new Set(round.mines || []); game.showMines = Boolean(round.mines); game.remoteWallet = round.wallet;
       game.phase = round.phase === "active" ? "active" : round.hit ? "lost" : "cashed";
     };
+    const normalizeActiveRound = (round) => {
+      if (!round || (round.game && round.game !== "mines")) return null;
+      const state = round.state && typeof round.state === "object" ? round.state : round;
+      const roundId = round.roundId || state.roundId || round.id;
+      if (!roundId || round.phase !== "active") return null;
+      return { ...state, roundId, phase: round.phase, wallet: round.wallet ?? state.wallet, mines: null };
+    };
+    const activeRoundKey = (round) => JSON.stringify([round.roundId, round.phase, round.bet, round.mineCount, round.revealed, round.multiplier, round.wallet]);
+    const applyActiveRound = (round) => {
+      const active = normalizeActiveRound(round);
+      if (!active) return false;
+      const key = activeRoundKey(active);
+      if (game.irisMinesActiveRoundKey === key && game.remoteRoundId === active.roundId && game.phase === "active") return true;
+      apply(active); game.status = `ROUND RESTORED ${active.revealed.length}  x${active.multiplier.toFixed(2)}`; game.irisMinesActiveRoundKey = key;
+      game.render(); return true;
+    };
+    const waitForScope = async () => {
+      const requests = window.__IRIS_ACTIVITY_REQUESTS__;
+      if (requests?.waitForUserScope) await requests.waitForUserScope();
+    };
+    const restoreMinesRound = async (eventRound = null) => {
+      if (eventRound) {
+        try { await waitForScope(); return applyActiveRound(eventRound); } catch { return false; }
+      }
+      if (game.irisMinesRestorePromise) return game.irisMinesRestorePromise;
+      game.irisMinesRestorePromise = (async () => {
+        try {
+          await waitForScope();
+          const cached = window.__IRIS_ACTIVE_ROUNDS__?.find((round) => round.game === "mines" && round.phase === "active");
+          if (cached && applyActiveRound(cached)) return true;
+          const response = await fetch("/api/games/mines/active-round", { credentials: "include", cache: "no-store" });
+          if (!response.ok) return false;
+          const payload = await response.json().catch(() => null);
+          return applyActiveRound(payload?.round);
+        } catch { return false; }
+        finally { game.irisMinesRestorePromise = null; }
+      })();
+      return game.irisMinesRestorePromise;
+    };
+    game.irisRestoreMinesRound = restoreMinesRound;
+    window.addEventListener("iris-active-round", (event) => {
+      if (window.__LUX_NOCTIS__?.gameInstance !== game) return;
+      void restoreMinesRound(event.detail);
+    });
+    window.addEventListener("iris-user-scope-ready", () => {
+      if (window.__LUX_NOCTIS__?.gameInstance !== game) return;
+      void restoreMinesRound();
+    });
     const resetAfterResult = () => {
       game.clearReset(); game.resetTimer = game.setTimeout(() => { game.phase = "idle"; game.revealed.clear(); game.mines.clear(); game.multiplier = 1; game.status = "SELECT BET AND MINES"; game.showMines = false; game.remoteRoundId = null; game.render(); }, game.app.profile.data.settings.reducedMotion ? 650 : 1900);
     };
@@ -269,6 +317,7 @@
       catch (error) { this.app.toast("MINES UNAVAILABLE", error instanceof Error ? error.message : "Please try again.", "L"); }
       finally { this.busy = false; this.render(); }
     };
+    void restoreMinesRound();
   }
 
   function patchWar(game) {

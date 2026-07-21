@@ -13,8 +13,9 @@
       const rounds = Array.isArray(payload?.rounds) ? payload.rounds : [];
       const persisted = read();
       for (const game of Object.keys(persisted)) if (!rounds.some((round) => round.game === game)) forget(game);
-      for (const round of rounds) { remember(round); window.dispatchEvent(new CustomEvent("iris-active-round", { detail: round })); }
+      // Keep the authoritative snapshot available before notifying a game view.
       window.__IRIS_ACTIVE_ROUNDS__ = rounds;
+      for (const round of rounds) { remember(round); window.dispatchEvent(new CustomEvent("iris-active-round", { detail: round })); }
     } catch {}
   }
   function multiStepRequest(url, init) {

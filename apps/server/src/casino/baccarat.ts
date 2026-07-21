@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { baccaratRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -44,7 +45,7 @@ export class FileBaccaratRoundStore implements BaccaratRoundStore {
 
   load(): BaccaratRound[] {
     try {
-      const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
+      const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8", baccaratRounds));
       if (!Array.isArray(value)) throw new Error("Baccarat state is invalid.");
       return value as BaccaratRound[];
     } catch (error) {
@@ -55,7 +56,7 @@ export class FileBaccaratRoundStore implements BaccaratRoundStore {
 
   save(rounds: BaccaratRound[]): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(rounds), "utf8");
+    writeFileSync(this.filePath, JSON.stringify(rounds), "utf8", baccaratRounds);
   }
 }
 

@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { dragonRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -15,8 +16,8 @@ export interface DragonRound { roundId: string; discordUserId: string; selection
 export interface DragonRoundStore { load(): DragonRound[]; save(rounds: DragonRound[]): void; }
 export class FileDragonRoundStore implements DragonRoundStore {
   constructor(private readonly filePath: string) {}
-  load(): DragonRound[] { try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8")); if (!Array.isArray(value)) throw new Error("Dragon state is invalid."); return value as DragonRound[]; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; } }
-  save(rounds: DragonRound[]): void { mkdirSync(dirname(this.filePath), { recursive: true }); writeFileSync(this.filePath, JSON.stringify(rounds), "utf8"); }
+  load(): DragonRound[] { try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8", dragonRounds)); if (!Array.isArray(value)) throw new Error("Dragon state is invalid."); return value as DragonRound[]; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; } }
+  save(rounds: DragonRound[]): void { mkdirSync(dirname(this.filePath), { recursive: true }); writeFileSync(this.filePath, JSON.stringify(rounds), "utf8", dragonRounds); }
 }
 export class DragonService {
   private readonly rounds: Map<string, DragonRound>;

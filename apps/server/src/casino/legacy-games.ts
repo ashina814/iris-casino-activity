@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { legacyGameRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -12,12 +13,12 @@ type Game = "holdem" | "tower" | "threecard" | "derby" | "ascent" | "arcana" | "
 type Phase = "reserving" | "active" | "settling" | "settled";
 type Card = { rank: string; suit: "S" | "H" | "D" | "C" };
 type PendingAdditionalWager = { actionId: string; action: "call" | "play"; transactionId: string; bet: number };
-type Round = { id: string; discordUserId: string; game: Game; bet: number; phase: Phase; payout: number | null; wallet: number | null; state: Record<string, unknown>; lastActionId: string | null; lastActionKey?: string; pendingAdditionalWager?: PendingAdditionalWager };
+type Round = { id: string; discordUserId: string; game: Game; bet: number; phase: Phase; payout: number | null; wallet: number | null; state: Record<string, unknown>; lastActionId: string | null; startFingerprint?: string; lastActionKey?: string; pendingAdditionalWager?: PendingAdditionalWager };
 export interface LegacyGameStore { load(): Round[]; save(rounds: Round[]): void }
 export class FileLegacyGameStore implements LegacyGameStore {
   constructor(private readonly path: string) {}
-  load(): Round[] { try { const value: unknown = JSON.parse(readFileSync(this.path, "utf8")); if (!Array.isArray(value)) throw new Error("Legacy game state is invalid."); return value as Round[]; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; } }
-  save(rounds: Round[]) { mkdirSync(dirname(this.path), { recursive: true }); writeFileSync(this.path, JSON.stringify(rounds), "utf8"); }
+  load(): Round[] { try { const value: unknown = JSON.parse(readFileSync(this.path, "utf8", legacyGameRounds)); if (!Array.isArray(value)) throw new Error("Legacy game state is invalid."); return value as Round[]; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; } }
+  save(rounds: Round[]) { mkdirSync(dirname(this.path), { recursive: true }); writeFileSync(this.path, JSON.stringify(rounds), "utf8", legacyGameRounds); }
 }
 
 export class LegacyGamesService {
@@ -25,10 +26,10 @@ export class LegacyGamesService {
   constructor(private readonly options: { env: ServerEnv; fetch: FetchLike; store: LegacyGameStore }) { this.rounds = new Map(options.store.load().map((round) => [round.id, round])); }
   async reconcileAll() { await Promise.all([...this.rounds.values()].filter((round) => round.phase === "reserving" || round.phase === "settling" || Boolean(round.pendingAdditionalWager)).map((round) => this.resume(round))); }
   async start(user: DiscordUser, game: Game, id: string, bet: number, extra: Record<string, unknown> = {}) {
-    this.validate(game, id, bet); const existing = this.rounds.get(id);
-    if (existing) { if (existing.discordUserId !== user.id || existing.game !== game || existing.bet !== bet) throw conflict(); await this.resume(existing); return this.public(existing); }
+    this.validate(game, id, bet); const startFingerprint = fingerprintStart(game, extra); const existing = this.rounds.get(id);
+    if (existing) { if (existing.discordUserId !== user.id || existing.game !== game || existing.bet !== bet || (existing.startFingerprint ?? fingerprintFromState(existing)) !== startFingerprint) throw conflict(); await this.resume(existing); return this.public(existing); }
     const state = initialState(game, extra);
-    const round: Round = { id, discordUserId: user.id, game, bet, phase: "reserving", payout: null, wallet: null, state, lastActionId: null };
+    const round: Round = { id, discordUserId: user.id, game, bet, phase: "reserving", payout: null, wallet: null, state, lastActionId: null, startFingerprint };
     this.rounds.set(id, round); this.save(); await this.resume(round); return this.public(round);
   }
   async action(user: DiscordUser, id: string, actionId: string, action: string, extra: Record<string, unknown> = {}) {
@@ -157,6 +158,25 @@ type DerbyState = { selection:number; form:number[]; odds:number[]; order:number
 type AscentState = { startedAt:number; crashPoint:number; multiplier:number; autoCash:number };
 type ArcanaState = { cards:string[]; open:number[]; matched:number[]; moves:number; startedAt:number | null };
 type MoonshotState = { scores:number[]; startedAt:number };
+function fingerprintStart(game: Game, extra: Record<string, unknown>): string {
+  if (game === "threecard") return JSON.stringify({ pairPlus: extra.pairPlus === true });
+  if (game === "derby") {
+    if (!Number.isInteger(extra.selection) || (extra.selection as number) < 0 || (extra.selection as number) > 5) throw new AppError(400, "bad_request", "Derby selection is invalid.");
+    return JSON.stringify({ selection: extra.selection });
+  }
+  if (game === "ascent") {
+    const auto = extra.auto === undefined ? 0 : extra.auto;
+    if (typeof auto !== "number" || ![0, 1.5, 2, 3, 5, 10].includes(auto)) throw new AppError(400, "bad_request", "Ascent auto cash-out is invalid.");
+    return JSON.stringify({ auto });
+  }
+  return "{}";
+}
+function fingerprintFromState(round: Round): string {
+  if (round.game === "threecard") return JSON.stringify({ pairPlus: (round.state as ThreeState).pairPlus === true });
+  if (round.game === "derby") return JSON.stringify({ selection: (round.state as DerbyState).selection });
+  if (round.game === "ascent") return JSON.stringify({ auto: (round.state as AscentState).autoCash });
+  return "{}";
+}
 function initialState(game: Game, extra: Record<string, unknown>): Record<string, unknown> {
   if (game === "tower") return { floor:1, multiplier:1, traps:traps(), ward:0, revealed:null } satisfies TowerState;
   if (game === "holdem") { const deck = cards(); return { deck, player:[draw(deck),draw(deck)], dealer:[draw(deck),draw(deck)], board:[draw(deck),draw(deck),draw(deck)], playerRank:null, dealerRank:null } satisfies HoldemState; }

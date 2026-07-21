@@ -20,7 +20,7 @@ export function readJsonFile<T>(filePath: string, fallback: T, validate: JsonSta
   }
 }
 
-export function readJsonFileSync(filePath: string, _encoding: "utf8" = "utf8", validate: JsonStateValidator = isStoredState): string {
+export function readJsonFileSync(filePath: string, _encoding: "utf8" = "utf8", validate: JsonStateValidator = rejectUnclassifiedState): string {
   try {
     return readSerialized(filePath, validate);
   } catch (primaryError) {
@@ -35,10 +35,12 @@ export function readJsonFileSync(filePath: string, _encoding: "utf8" = "utf8", v
   }
 }
 
-export function writeJsonFile(filePath: string, value: unknown, _encoding?: unknown, validate: JsonStateValidator = isStoredState): void {
+export function writeJsonFile(filePath: string, value: unknown, _encoding?: unknown, validate: JsonStateValidator = rejectUnclassifiedState): void {
   mkdirSync(dirname(filePath), { recursive: true });
-  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   const serialized = typeof value === "string" ? value : JSON.stringify(value);
+  const parsed: unknown = JSON.parse(serialized);
+  if (!validate(parsed)) throw new Error(`JSON state has an invalid shape: ${basename(filePath)}`);
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     writeFileSync(temporaryPath, serialized, { encoding: "utf8", mode: 0o600 });
     const descriptor = openSync(temporaryPath, "r");
@@ -79,32 +81,8 @@ function readSerialized(filePath: string, validate: JsonStateValidator): string 
   return content;
 }
 
-function isStoredState(value: unknown): value is unknown {
-  if (Array.isArray(value)) return value.every(isCasinoRoundOrDuel);
-  if (!isRecord(value)) return false;
-  if ("rounds" in value || "players" in value) {
-    return Array.isArray(value.rounds)
-      && value.rounds.every(isCasinoRound)
-      && Array.isArray(value.players)
-      && value.players.every((player) => isRecord(player) && typeof player.discordUserId === "string");
-  }
-  if ("users" in value) return isRecord(value.users);
-  if ("rooms" in value) return isRecord(value.rooms);
+function rejectUnclassifiedState(_value: unknown): _value is unknown {
   return false;
-}
-
-function isCasinoRoundOrDuel(value: unknown): boolean {
-  return isCasinoRound(value)
-    || (isRecord(value) && typeof value.id === "string" && typeof value.room === "string" && typeof value.status === "string" && Array.isArray(value.players));
-}
-
-function isCasinoRound(value: unknown): boolean {
-  if (!isRecord(value) || typeof value.discordUserId !== "string" || typeof value.phase !== "string") return false;
-  return ["id", "roundId", "spinId", "ticketId", "drawId", "dropId"].some((key) => typeof value[key] === "string");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isMissing(error: unknown): boolean {

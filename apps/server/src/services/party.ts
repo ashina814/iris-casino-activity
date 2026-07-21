@@ -2,6 +2,7 @@ import type { DiscordUser } from "@iris/shared";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { partyState } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 
 export type PartyAppearance = {
@@ -88,7 +89,7 @@ export class FilePartyStore implements PartyStore {
 
   load(): PartyState {
     try {
-      return normalizeState(JSON.parse(readFileSync(this.path, "utf8")) as unknown);
+      return normalizeState(JSON.parse(readFileSync(this.path, "utf8", partyState)) as unknown);
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") return { rooms: {} };
       throw error;
@@ -97,7 +98,7 @@ export class FilePartyStore implements PartyStore {
 
   save(state: PartyState): void {
     mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(state), "utf8");
+    writeFileSync(this.path, JSON.stringify(state), "utf8", partyState);
   }
 }
 

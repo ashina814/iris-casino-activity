@@ -2,6 +2,7 @@ import type { DiscordUser } from "@iris/shared";
 import { randomInt } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { activityProgress } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import { z } from "zod";
 import type { ServerEnv } from "../env.js";
@@ -208,7 +209,7 @@ export class FileActivityProgressStore implements ActivityProgressStore {
 
   load(): ActivityProgressState {
     try {
-      const value: unknown = JSON.parse(readFileSync(this.path, "utf8"));
+      const value: unknown = JSON.parse(readFileSync(this.path, "utf8", activityProgress));
       return normalizeState(value);
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") return { users: {} };
@@ -218,7 +219,7 @@ export class FileActivityProgressStore implements ActivityProgressStore {
 
   save(state: ActivityProgressState): void {
     mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(state), "utf8");
+    writeFileSync(this.path, JSON.stringify(state), "utf8", activityProgress);
   }
 }
 

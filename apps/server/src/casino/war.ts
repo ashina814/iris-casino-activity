@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { warRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -14,7 +15,7 @@ export type WarCard = { rank: string; suit: string };
 type PendingAdditionalWager = { actionId: string; transactionId: string; bet: number };
 export interface WarRound { roundId:string; discordUserId:string; bet:number; deck:WarCard[]; player:WarCard|null; dealer:WarCard|null; warPlayer:WarCard|null; warDealer:WarCard|null; phase:Phase; payout:number|null; wallet:number|null; label:string|null; wentToWar:boolean; lastActionId:string|null; lastAction:Action|null; pendingAdditionalWager?:PendingAdditionalWager }
 export interface WarRoundStore { load():WarRound[]; save(rounds:WarRound[]):void }
-export class FileWarRoundStore implements WarRoundStore { constructor(private readonly filePath:string) {} load(){try{const value:unknown=JSON.parse(readFileSync(this.filePath,"utf8"));if(!Array.isArray(value))throw new Error("War state invalid");return value as WarRound[]}catch(error){if(error instanceof Error&&"code" in error&&error.code==="ENOENT")return [];throw error}} save(rounds:WarRound[]){mkdirSync(dirname(this.filePath),{recursive:true});writeFileSync(this.filePath,JSON.stringify(rounds),"utf8")} }
+export class FileWarRoundStore implements WarRoundStore { constructor(private readonly filePath:string) {} load(){try{const value:unknown=JSON.parse(readFileSync(this.filePath, "utf8", warRounds));if(!Array.isArray(value))throw new Error("War state invalid");return value as WarRound[]}catch(error){if(error instanceof Error&&"code" in error&&error.code==="ENOENT")return [];throw error}} save(rounds:WarRound[]){mkdirSync(dirname(this.filePath),{recursive:true});writeFileSync(this.filePath, JSON.stringify(rounds), "utf8", warRounds)} }
 
 export class WarService {
   private readonly rounds: Map<string, WarRound>;

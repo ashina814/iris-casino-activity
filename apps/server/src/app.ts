@@ -62,6 +62,13 @@ type ReconciliationStatus = { complete: boolean; failures: ReconciliationFailure
 type ReconciliationTarget = { game: string; service: unknown };
 type ReconciliationService = { reconcileAll(): Promise<void>; resume?: (round: Record<string, unknown>) => Promise<void>; rounds?: Map<string, Record<string, unknown>> };
 
+class ReconciliationQuarantinedError extends Error {
+  constructor(readonly code: string) {
+    super("Casino round requires support.");
+    this.name = "ReconciliationQuarantinedError";
+  }
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const env = loadEnv(options.env);
   const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -140,15 +147,19 @@ export function createApp(options: CreateAppOptions = {}) {
     { game: "war", service: war }, { game: "bingo", service: bingo }, { game: "scratch", service: scratch }, { game: "legacy", service: legacyGames }
   ];
   const reconciliationStatus: ReconciliationStatus = { complete: false, failures: [] };
+  for (const target of reconciliationTargets) {
+    for (const failure of persistedReconciliationFailures(target)) addReconciliationFailure(reconciliationStatus, failure);
+  }
   const reconciliation = Promise.all(reconciliationTargets.map(reconcileTarget)).then((results) => {
     for (const failure of results.flat()) {
-      reconciliationStatus.failures.push(failure);
-      logger.error("casino_reconcile_failed", {
-        game: failure.game,
-        roundId: failure.roundId,
-        errorName: failure.errorName,
-        errorCode: failure.errorCode
-      });
+      if (addReconciliationFailure(reconciliationStatus, failure)) {
+        logger.error("casino_reconcile_failed", {
+          game: failure.game,
+          roundId: failure.roundId,
+          errorName: failure.errorName,
+          errorCode: failure.errorCode
+        });
+      }
     }
     reconciliationStatus.complete = true;
   });
@@ -217,7 +228,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const game = req.path.split("/")[1] ?? "";
     const user = getSession(req).user;
     if (user && isExistingCasinoReplay(game, user.id, req.body)) return next();
-    assertCasinoStartAllowed(env, game, req.body);
+    assertCasinoStartAllowed(env, game, req.body, reconciliationStatus);
     next();
   });
   app.use("/api/games", createRateLimit({ max: 300, windowMs: 60_000, key: requestPlayer }));
@@ -983,11 +994,33 @@ async function reconcileTarget(target: ReconciliationTarget): Promise<Reconcilia
     if (!shouldReconcileRound(round)) continue;
     try {
       await service.resume.call(service, round);
+      if (String(round.phase) === "reconciliation_failed") {
+        failures.push(reconciliationFailure(target.game === "legacy" && typeof round.game === "string" ? round.game : target.game, casinoRoundId(round), new ReconciliationQuarantinedError(safeReconciliationReason(round))));
+      }
     } catch (error) {
       failures.push(reconciliationFailure(target.game === "legacy" && typeof round.game === "string" ? round.game : target.game, casinoRoundId(round), error));
     }
   }
   return failures;
+}
+
+function persistedReconciliationFailures(target: ReconciliationTarget): ReconciliationFailure[] {
+  const rounds = (target.service as ReconciliationService).rounds;
+  if (!rounds) return [];
+  return [...rounds.values()]
+    .filter((round) => String(round.phase) === "reconciliation_failed")
+    .map((round) => reconciliationFailure(target.game === "legacy" && typeof round.game === "string" ? round.game : target.game, casinoRoundId(round), new ReconciliationQuarantinedError(safeReconciliationReason(round))));
+}
+
+function safeReconciliationReason(round: Record<string, unknown>): string {
+  const reason = (round.reconciliation as Record<string, unknown> | undefined)?.reason;
+  return typeof reason === "string" && /^[a-z0-9_:-]{1,64}$/u.test(reason) ? reason : "reconciliation_failed";
+}
+
+function addReconciliationFailure(status: ReconciliationStatus, failure: ReconciliationFailure): boolean {
+  if (status.failures.some((existing) => existing.game === failure.game && existing.roundId === failure.roundId)) return false;
+  status.failures.push(failure);
+  return true;
 }
 
 function shouldReconcileRound(round: Record<string, unknown>): boolean {
@@ -999,7 +1032,7 @@ function reconciliationFailure(game: string, roundId: string | undefined, source
     game,
     roundId,
     errorName: source instanceof Error ? source.name : "NonErrorThrown",
-    errorCode: source instanceof AppError ? source.code : undefined
+    errorCode: source instanceof AppError || source instanceof ReconciliationQuarantinedError ? source.code : undefined
   };
 }
 
@@ -1017,24 +1050,36 @@ function isCasinoStartPath(path: string): boolean {
   return /^\/[a-z0-9-]+\/(?:rounds|spins|tickets|drops|draws)$/u.test(path);
 }
 
-function assertCasinoStartAllowed(env: ServerEnv, game: string, body: unknown): void {
+function assertCasinoStartAllowed(env: ServerEnv, game: string, body: unknown, reconciliation: ReconciliationStatus): void {
+  if (!reconciliation.complete || reconciliation.failures.length > 0) throw new AppError(503, "casino_maintenance", "New casino rounds are temporarily unavailable.");
   if (!env.CASINO_NEW_BETS_ENABLED) throw new AppError(503, "casino_maintenance", "New casino rounds are temporarily unavailable.");
   if (casinoDisabledGames(env).includes(game)) throw new AppError(503, "casino_game_disabled", "This game is temporarily unavailable.");
-  const wager = requestedWager(body);
-  if (env.CASINO_BETA_MAX_BET > 0 && wager !== null && wager > env.CASINO_BETA_MAX_BET) {
+  if (env.CASINO_BETA_MAX_BET <= 0) return;
+  const wager = requestedWager(game, body);
+  if (wager === null) throw new AppError(400, "bad_request", "The requested wager is invalid.");
+  if (wager > env.CASINO_BETA_MAX_BET) {
     throw new AppError(400, "bet_out_of_range", "The requested wager exceeds the current beta limit.");
   }
 }
 
-function requestedWager(body: unknown): number | null {
+function requestedWager(game: string, body: unknown): number | null {
   if (!body || typeof body !== "object") return null;
   const value = body as Record<string, unknown>;
-  for (const key of ["bet", "wager", "amount"]) if (typeof value[key] === "number") return value[key] as number;
-  if (Array.isArray(value.bets)) return value.bets.reduce<number>((total, bet) => {
-    const amount = typeof bet === "object" && bet ? (bet as Record<string, unknown>).amount : undefined;
-    return total + (typeof amount === "number" ? amount : 0);
-  }, 0);
-  return null;
+  if (["roulette", "sicbo", "baccarat"].includes(game)) return summedBetAmounts(value.bets);
+  const supplied = [value.bet, value.wager].filter((amount) => amount !== undefined);
+  if (supplied.length !== 1 || typeof supplied[0] !== "number") return null;
+  return Number.isSafeInteger(supplied[0]) && supplied[0] > 0 ? supplied[0] : null;
+}
+
+function summedBetAmounts(value: unknown): number | null {
+  if (!Array.isArray(value) || value.length < 1) return null;
+  let total = 0;
+  for (const bet of value) {
+    const amount = bet && typeof bet === "object" ? (bet as Record<string, unknown>).amount : undefined;
+    if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount <= 0 || !Number.isSafeInteger(total + amount)) return null;
+    total += amount;
+  }
+  return total;
 }
 
 function requestedRoundId(body: unknown, preferredKey?: string): string | null {

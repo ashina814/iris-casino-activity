@@ -121,6 +121,60 @@ describe("server API", () => {
     }
   });
 
+  it("uses game-specific wager extraction for beta limits", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "iris-beta-wagers-"));
+    try {
+      const app = createApp({ env: { ...baseEnv, ...testStatePaths(directory), IRIS_MOCK_WALLET: "true", CASINO_BETA_MAX_BET: "100" }, logger: silentLogger });
+      await app.locals.reconciliation;
+      const agent = request.agent(app);
+      await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+      await agent.post("/api/games/roulette/spins").send({ spinId: "roulette-amount", amount: 1, bets: [{ selection: "color:red", amount: 101 }] }).expect(400);
+      await agent.post("/api/games/roulette/spins").send({ spinId: "roulette-bet", bet: 1, bets: [{ selection: "color:red", amount: 101 }] }).expect(400);
+      await agent.post("/api/games/sicbo/spins").send({ spinId: "sicbo-bypass", amount: 1, bets: [{ selection: "big", amount: 101 }] }).expect(400);
+      await agent.post("/api/games/baccarat/rounds").send({ roundId: "baccarat-bypass", wager: 1, bets: [{ selection: "player", amount: 101 }] }).expect(400);
+      await agent.post("/api/games/roulette/spins").send({ spinId: "roulette-safe", amount: 1, bets: [{ selection: "color:red", amount: 100 }] }).expect(200);
+      await agent.post("/api/games/sicbo/spins").send({ spinId: "sicbo-overflow", bets: [{ selection: "big", amount: Number.MAX_SAFE_INTEGER }, { selection: "small", amount: 1 }] }).expect(400);
+      await agent.post("/api/games/mines/rounds").send({ roundId: "mines-over-limit", bet: 500, mineCount: 3 }).expect(400);
+      await agent.post("/api/games/mines/rounds").send({ roundId: "mines-at-limit", bet: 100, mineCount: 3 }).expect(201);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps persisted and quiet reconciliation failures unready while allowing exact replay", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "iris-persisted-reconciliation-"));
+    const roulettePath = join(directory, "roulette.json");
+    const failed = { spinId: "persisted-failure", discordUserId: "234567890123456789", bets: [{ selection: "color:red", amount: 100 }], total: 100, number: null, payout: null, wallet: null, phase: "reconciliation_failed", reconciliation: { reason: "remote_cancelled" } };
+    try {
+      await writeFile(roulettePath, JSON.stringify([failed]));
+      const health = vi.fn().mockResolvedValue(jsonResponse({ ok: true, service: "iris-economy-bot", currency: "Ris", guildId: "guild-1" }));
+      const env = { ...baseEnv, ...testStatePaths(directory), ROULETTE_STATE_PATH: roulettePath, IRIS_MOCK_WALLET: "true" };
+      const app = createApp({ env, fetch: health, logger: silentLogger });
+      await app.locals.reconciliation;
+      const agent = request.agent(app);
+      await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+      const ready = await agent.get("/api/ready").expect(503);
+      expect(ready.body.reconciliationFailures).toBe(1);
+      const active = await agent.get("/api/games/roulette/active-round").expect(200);
+      expect(active.body.round).toMatchObject({ roundId: "persisted-failure", phase: "reconciliation_failed", recovery: "support_required" });
+      await agent.post("/api/games/roulette/spins").send({ spinId: "new-spin", bets: [{ selection: "color:red", amount: 100 }] }).expect(503);
+      await agent.post("/api/games/roulette/spins").send({ spinId: "persisted-failure", bets: [{ selection: "color:red", amount: 100 }] }).expect(200);
+
+      const restarted = createApp({ env, fetch: health, logger: silentLogger });
+      await restarted.locals.reconciliation;
+      await request(restarted).get("/api/ready").expect(503);
+
+      await writeFile(roulettePath, JSON.stringify([{ ...failed, spinId: "quiet-failure", phase: "reserving", reconciliation: undefined }]));
+      const quietFetch = vi.fn().mockResolvedValue(jsonResponse({ ok: true, wallet: 12_400, currency: "Ris", transaction: { transactionId: "roulette-quiet-failure", sessionId: "roulette-quiet-failure", game: "roulette", bet: 100, status: "cancelled", payout: null } }));
+      const quiet = createApp({ env: { ...env, IRIS_MOCK_WALLET: "false" }, fetch: quietFetch, logger: silentLogger });
+      await quiet.locals.reconciliation;
+      const quietReady = await request(quiet).get("/api/ready").expect(503);
+      expect(quietReady.body.reconciliationFailures).toBeGreaterThanOrEqual(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("allows exact existing casino starts through maintenance controls while preserving conflicts", async () => {
     const directory = await mkdtemp(join(tmpdir(), "iris-maintenance-replay-"));
     const stateEnv = {
@@ -368,39 +422,55 @@ describe("server API", () => {
   });
 
   it("uses the authenticated Discord identity for Party rooms", async () => {
-    const agent = await authenticatedAgent();
-    const joined = await agent.post("/api/party/join").send({
-      room: "night-test",
-      appearance: { level: 7, game: "Lobby", glyph: "R" },
-      name: "forged-name"
-    }).expect(200);
+    const directory = await mkdtemp(join(tmpdir(), "iris-party-identity-"));
+    try {
+      const app = createApp({ env: { ...baseEnv, ...testStatePaths(directory) }, logger: silentLogger });
+      await app.locals.reconciliation;
+      const agent = request.agent(app);
+      await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+      const joined = await agent.post("/api/party/join").send({
+        room: "night-test",
+        appearance: { level: 7, game: "Lobby", glyph: "R" },
+        name: "forged-name"
+      }).expect(200);
 
-    expect(joined.body.players).toEqual([{ id: "234567890123456789", name: "Yuki", level: 7, game: "Lobby", glyph: "R" }]);
+      expect(joined.body.players).toEqual([{ id: "234567890123456789", name: "Yuki", level: 7, game: "Lobby", glyph: "R" }]);
 
-    const event = await agent.post("/api/party/events").send({
-      room: "night-test",
-      kind: "reaction",
-      payload: { emoji: "OK" }
-    }).expect(200);
-    expect(event.body.feed[0]).toMatchObject({ text: "Yuki: OK" });
+      const event = await agent.post("/api/party/events").send({
+        room: "night-test",
+        kind: "reaction",
+        payload: { emoji: "OK" }
+      }).expect(200);
+      expect(event.body.feed[0]).toMatchObject({ text: "Yuki: OK" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("returns the server-owned Night League after the user joins the room", async () => {
-    const agent = await authenticatedAgent();
-    await agent.post("/api/party/join").send({
-      room: "night-league",
-      appearance: { level: 7, game: "Lobby", glyph: "R" }
-    }).expect(200);
+    const directory = await mkdtemp(join(tmpdir(), "iris-party-league-"));
+    try {
+      const app = createApp({ env: { ...baseEnv, ...testStatePaths(directory) }, logger: silentLogger });
+      await app.locals.reconciliation;
+      const agent = request.agent(app);
+      await agent.post("/api/auth/exchange").send({ code: "mock-code" }).expect(200);
+      await agent.post("/api/party/join").send({
+        room: "night-league",
+        appearance: { level: 7, game: "Lobby", glyph: "R" }
+      }).expect(200);
 
-    const synced = await agent.post("/api/league/submit").send({
-      room: "night-league",
-      score: 999_999_999,
-      rounds: 9_999,
-      wins: 9_999,
-      bestReturn: 999_999_999
-    }).expect(200);
+      const synced = await agent.post("/api/league/submit").send({
+        room: "night-league",
+        score: 999_999_999,
+        rounds: 9_999,
+        wins: 9_999,
+        bestReturn: 999_999_999
+      }).expect(200);
 
-    expect(synced.body).toMatchObject({ ok: true, league: [] });
+      expect(synced.body).toMatchObject({ ok: true, league: [] });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("allows Crown Duel waiting rooms only for active Party members", async () => {

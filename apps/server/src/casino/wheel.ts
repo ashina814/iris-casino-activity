@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { wheelRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -14,8 +15,8 @@ export interface WheelRound { spinId: string; discordUserId: string; bet: number
 export interface WheelRoundStore { load(): WheelRound[]; save(rounds: WheelRound[]): void; }
 export class FileWheelRoundStore implements WheelRoundStore {
   constructor(private readonly filePath: string) {}
-  load(): WheelRound[] { try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8")); if (!Array.isArray(value)) throw new Error("Wheel state is invalid."); return value as WheelRound[]; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; } }
-  save(rounds: WheelRound[]): void { mkdirSync(dirname(this.filePath), { recursive: true }); writeFileSync(this.filePath, JSON.stringify(rounds), "utf8"); }
+  load(): WheelRound[] { try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8", wheelRounds)); if (!Array.isArray(value)) throw new Error("Wheel state is invalid."); return value as WheelRound[]; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; } }
+  save(rounds: WheelRound[]): void { mkdirSync(dirname(this.filePath), { recursive: true }); writeFileSync(this.filePath, JSON.stringify(rounds), "utf8", wheelRounds); }
 }
 export class WheelService {
   private readonly rounds: Map<string, WheelRound>;

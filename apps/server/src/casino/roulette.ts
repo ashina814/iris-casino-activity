@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readJsonFileSync as readFileSync, writeJsonFile as writeFileSync } from "../storage/atomic-json.js";
+import { rouletteRounds } from "../storage/store-validators.js";
 import { dirname } from "node:path";
 import type { DiscordUser } from "@iris/shared";
 import type { ServerEnv } from "../env.js";
@@ -27,12 +28,12 @@ export interface RouletteRoundStore { load(): RouletteRound[]; save(rounds: Roul
 export class FileRouletteRoundStore implements RouletteRoundStore {
   constructor(private readonly filePath: string) {}
   load(): RouletteRound[] {
-    try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8")); if (!Array.isArray(value)) throw new Error("Roulette state is invalid."); return value as RouletteRound[]; }
+    try { const value: unknown = JSON.parse(readFileSync(this.filePath, "utf8", rouletteRounds)); if (!Array.isArray(value)) throw new Error("Roulette state is invalid."); return value as RouletteRound[]; }
     catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; }
   }
   save(rounds: RouletteRound[]): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(rounds), "utf8");
+    writeFileSync(this.filePath, JSON.stringify(rounds), "utf8", rouletteRounds);
   }
 }
 

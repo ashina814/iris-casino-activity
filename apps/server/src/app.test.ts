@@ -95,6 +95,10 @@ describe("server API", () => {
       const active = await agent.get("/api/games/arcana/active-round").expect(200);
       expect(active.body.round.state).not.toHaveProperty("cards");
       expect(active.body.round.state.state).toMatchObject({ open: expect.any(Array), matched: expect.any(Array) });
+
+      const started = await agent.post("/api/games/arcana/rounds/arcana-redaction/actions").send({ actionId: "arcana-begin", action: "begin" }).expect(200);
+      expect(started.body.round.state).not.toHaveProperty("cards");
+      expect(started.body.round.state.visibleCards).toEqual({});
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

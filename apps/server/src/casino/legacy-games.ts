@@ -107,6 +107,15 @@ export class LegacyGamesService {
     if (round.game === "holdem" || round.game === "threecard") delete state.deck;
     if (round.game === "holdem" && round.phase === "active") state.dealer = hiddenCards(2);
     if (round.game === "threecard" && round.phase === "active") state.dealer = hiddenCards(3);
+    if (round.game === "arcana" && round.phase === "active" && state.startedAt !== null) {
+      const cards = Array.isArray(state.cards) ? state.cards : [];
+      const visible = new Map<number, unknown>();
+      for (const index of [...asIndexes(state.open), ...asIndexes(state.matched)]) {
+        if (cards[index] !== undefined) visible.set(index, cards[index]);
+      }
+      delete state.cards;
+      state.visibleCards = Object.fromEntries(visible);
+    }
     return { ...round, state, sovereign: this.sovereignMetadata(round), serverNow: Date.now() };
   }
   private sovereignMetadata(round: Round) {
@@ -135,6 +144,10 @@ export class LegacyGamesService {
   private require(user: DiscordUser, id: string) { const round = this.rounds.get(id); if (!round || round.discordUserId !== user.id) throw new AppError(404, "casino_transaction_not_found", "Game round was not found."); return round; }
   private validate(game: Game, id: string, bet: number) { if (!valid(id) || ![100,500,1000,2500,5000].includes(bet) || !["holdem","tower","threecard","derby","ascent","arcana","moonshot"].includes(game)) throw new AppError(400, "bad_request", "Game round is invalid."); }
   private save() { this.options.store.save([...this.rounds.values()]); }
+}
+
+function asIndexes(value: unknown) {
+  return Array.isArray(value) ? value.filter((index): index is number => Number.isInteger(index) && index >= 0 && index < 16) : [];
 }
 
 type TowerState = { floor:number; multiplier:number; traps:number[]; ward:number; revealed:number | null };

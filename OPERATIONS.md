@@ -6,3 +6,4 @@
 - legacy migration: 通常は `LEGACY_MIGRATION_ENABLED=false`。有効化時は許可Discord IDだけを `LEGACY_MIGRATION_ALLOWLIST` に設定し、完了後ただちに無効化する。
 - readiness: `/api/ready` の503時は `reconciliationFailures`、Economy到達性、storage書込み可能性を確認する。秘密値やrequest bodyをログへ出さない。
 - JSON破損: `.bak` 復旧を確認し、元JSONを手編集しない。復旧できない場合はバックアップを確保して停止し、incidentとして扱う。
+- read-only確認: `npm run casino:status`、特定ユーザーの進行中roundは `npm run casino:active -- --user <DiscordID>` を使う。JSONを直接編集しない。

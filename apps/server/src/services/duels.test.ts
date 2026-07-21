@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DuelService, FileDuelStore } from "./duels.js";
 
 const first = { id: "234567890123456789", username: "Yuki", displayName: "Yuki", avatarUrl: null };
@@ -6,7 +8,7 @@ const second = { id: "345678901234567890", username: "Haru", displayName: "Haru"
 
 describe("DuelService", () => {
   it("persists a five-round queue duel and allows each player to claim once", () => {
-    const service = new DuelService(new FileDuelStore(`C:\\tmp\\iris-casino-duels-${Date.now()}.json`));
+    const service = new DuelService(new FileDuelStore(join(tmpdir(), `iris-casino-duels-${Date.now()}.json`)));
     const room = `test-${Date.now()}`;
     const waiting = service.queue(first, room, "dice", "R");
     expect(waiting.status).toBe("waiting");

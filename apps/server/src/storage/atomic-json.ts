@@ -2,41 +2,40 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
-export function readJsonFile<T>(filePath: string, fallback: T, validate: (value: unknown) => value is T): T {
+export type JsonStateValidator<T = unknown> = (value: unknown) => value is T;
+
+export function readJsonFile<T>(filePath: string, fallback: T, validate: JsonStateValidator<T>): T {
   try {
     return parse(filePath, validate);
-  } catch (error) {
-    if (isMissing(error)) return fallback;
+  } catch (primaryError) {
     const backupPath = `${filePath}.bak`;
     try {
       const recovered = parse(backupPath, validate);
       console.warn("json_store_recovered_from_backup", { file: basename(filePath) });
       return recovered;
-    } catch {
-      throw error;
+    } catch (backupError) {
+      if (isMissing(primaryError) && isMissing(backupError)) return fallback;
+      throw isMissing(primaryError) ? backupError : primaryError;
     }
   }
 }
 
-export function readJsonFileSync(filePath: string, _encoding: "utf8" = "utf8"): string {
+export function readJsonFileSync(filePath: string, _encoding: "utf8" = "utf8", validate: JsonStateValidator = isStoredState): string {
   try {
-    const content = readFileSync(filePath, "utf8");
-    JSON.parse(content);
-    return content;
-  } catch (error) {
-    if (isMissing(error)) throw error;
+    return readSerialized(filePath, validate);
+  } catch (primaryError) {
     try {
-      const recovered = readFileSync(`${filePath}.bak`, "utf8");
-      JSON.parse(recovered);
+      const recovered = readSerialized(`${filePath}.bak`, validate);
       console.warn("json_store_recovered_from_backup", { file: basename(filePath) });
       return recovered;
-    } catch {
-      throw error;
+    } catch (backupError) {
+      if (isMissing(primaryError) && isMissing(backupError)) throw primaryError;
+      throw isMissing(primaryError) ? backupError : primaryError;
     }
   }
 }
 
-export function writeJsonFile(filePath: string, value: unknown, _encoding?: unknown): void {
+export function writeJsonFile(filePath: string, value: unknown, _encoding?: unknown, validate: JsonStateValidator = isStoredState): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   const serialized = typeof value === "string" ? value : JSON.stringify(value);
@@ -48,17 +47,18 @@ export function writeJsonFile(filePath: string, value: unknown, _encoding?: unkn
         if (!isUnsupportedSync(error)) throw error;
       }
     } finally { closeSync(descriptor); }
-    if (existsSync(filePath)) backupValidPrimary(filePath);
+    if (existsSync(filePath)) backupValidPrimary(filePath, validate);
     renameSync(temporaryPath, filePath);
   } finally {
     if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
   }
 }
 
-function backupValidPrimary(filePath: string): void {
+function backupValidPrimary(filePath: string, validate: JsonStateValidator): void {
   const primary = readFileSync(filePath, "utf8");
   try {
-    JSON.parse(primary);
+    const parsed: unknown = JSON.parse(primary);
+    if (!validate(parsed)) return;
   } catch {
     // Preserve the last known-good backup when the primary is already corrupt.
     return;
@@ -66,10 +66,45 @@ function backupValidPrimary(filePath: string): void {
   writeFileSync(`${filePath}.bak`, primary, { encoding: "utf8", mode: 0o600 });
 }
 
-function parse<T>(filePath: string, validate: (value: unknown) => value is T): T {
+function parse<T>(filePath: string, validate: JsonStateValidator<T>): T {
   const value: unknown = JSON.parse(readFileSync(filePath, "utf8"));
   if (!validate(value)) throw new Error(`JSON state has an invalid shape: ${basename(filePath)}`);
   return value;
+}
+
+function readSerialized(filePath: string, validate: JsonStateValidator): string {
+  const content = readFileSync(filePath, "utf8");
+  const value: unknown = JSON.parse(content);
+  if (!validate(value)) throw new Error(`JSON state has an invalid shape: ${basename(filePath)}`);
+  return content;
+}
+
+function isStoredState(value: unknown): value is unknown {
+  if (Array.isArray(value)) return value.every(isCasinoRoundOrDuel);
+  if (!isRecord(value)) return false;
+  if ("rounds" in value || "players" in value) {
+    return Array.isArray(value.rounds)
+      && value.rounds.every(isCasinoRound)
+      && Array.isArray(value.players)
+      && value.players.every((player) => isRecord(player) && typeof player.discordUserId === "string");
+  }
+  if ("users" in value) return isRecord(value.users);
+  if ("rooms" in value) return isRecord(value.rooms);
+  return false;
+}
+
+function isCasinoRoundOrDuel(value: unknown): boolean {
+  return isCasinoRound(value)
+    || (isRecord(value) && typeof value.id === "string" && typeof value.room === "string" && typeof value.status === "string" && Array.isArray(value.players));
+}
+
+function isCasinoRound(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.discordUserId !== "string" || typeof value.phase !== "string") return false;
+  return ["id", "roundId", "spinId", "ticketId", "drawId", "dropId"].some((key) => typeof value[key] === "string");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isMissing(error: unknown): boolean {
